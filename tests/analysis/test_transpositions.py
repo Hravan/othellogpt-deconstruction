@@ -1,15 +1,8 @@
 """
 tests/analysis/test_transpositions.py
 """
-
-import numpy as np
-import pytest
-
-from othellogpt_deconstruction.core.tokenizer import pos_to_alg
-from othellogpt_deconstruction.core.board import legal_moves
 from othellogpt_deconstruction.analysis.transpositions import (
     find_transpositions, summarise,
-    TranspositionGroup, TrichroneSubgroup, TrichromeGroupDiff,
 )
 
 # ---------------------------------------------------------------------------
