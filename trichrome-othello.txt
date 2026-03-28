@@ -1,0 +1,229 @@
+TRICHROME OTHELLO — FORMAL SPECIFICATION
+=========================================
+Version 1.0
+
+1. OVERVIEW
+-----------
+Trichrome Othello (TO) is a formal extension of standard Othello (Reversi).
+It is defined over the same move sequences as Othello. The legal moves are
+identical. The state space is strictly richer: each disc carries both an
+ownership attribute and a color attribute. The color attribute is a
+deterministic function of the disc's capture history.
+
+This specification defines the state space, transition function, and
+equivalence relations needed to identify move sequences that share an
+Othello state but differ in Trichrome state.
+
+
+2. BOARD
+--------
+An 8x8 grid of 64 cells, indexed (r, c) where r is row 0..7 and c is
+column 0..7.
+
+Each cell is either:
+  - EMPTY
+  - OCCUPIED by a disc
+
+A disc has two attributes:
+  - OWNER  : {1, 2}  where 1 = Black, 2 = White
+  - COLOR  : {R, G, B}  where R = Red, G = Green, B = Blue
+
+
+3. COLOR SEMANTICS
+------------------
+Color encodes the number of times a disc has been captured, modulo 3.
+
+  flips mod 3 = 0  ->  RED   (R)   disc has never been captured, or
+                                    captured a multiple of 3 times
+  flips mod 3 = 1  ->  GREEN (G)   captured 1 time mod 3
+  flips mod 3 = 2  ->  BLUE  (B)   captured 2 times mod 3
+
+A disc placed on an empty cell always starts RED regardless of owner.
+A disc that is captured advances one color step:
+  R -> G -> B -> R -> G -> B -> ...
+
+Color advance happens at the moment of capture, simultaneously with
+ownership change.
+
+
+4. STATE
+--------
+The Othello state S_O is a function:
+  S_O : (r, c) -> {EMPTY, BLACK, WHITE}
+
+The Trichrome state S_T is a function:
+  S_T : (r, c) -> {EMPTY, (1,R), (1,G), (1,B), (2,R), (2,G), (2,B)}
+
+Where (owner, color) encodes both attributes of an occupied cell.
+
+S_O is a projection of S_T:
+  project(EMPTY)   = EMPTY
+  project((1, _))  = BLACK
+  project((2, _))  = WHITE
+
+Two move sequences are Othello-equivalent if they produce the same S_O.
+Two move sequences are Trichrome-equivalent if they produce the same S_T.
+
+Trichrome equivalence is strictly finer than Othello equivalence:
+  S_T1 = S_T2  =>  S_O1 = S_O2
+  S_O1 = S_O2  does NOT imply  S_T1 = S_T2
+
+
+5. INITIAL STATE
+----------------
+Four discs placed in the center, all RED:
+
+  (3,3) : (2, R)   White
+  (3,4) : (1, R)   Black
+  (4,3) : (1, R)   Black
+  (4,4) : (2, R)   White
+
+All other cells EMPTY.
+
+
+6. MOVE LEGALITY
+----------------
+Move legality is determined exclusively by S_O, not S_T.
+
+A move by player P at cell (r, c) is legal if and only if:
+  (a) cell (r, c) is EMPTY
+  (b) there exists at least one direction d in
+      {N, NE, E, SE, S, SW, W, NW} such that:
+      - the adjacent cell in direction d is occupied by the opponent
+      - following direction d, there is a contiguous sequence of one
+        or more opponent discs terminated by a disc owned by P
+
+This is identical to standard Othello legality.
+Color attributes have no effect on legality.
+
+
+7. TRANSITION FUNCTION
+----------------------
+When player P plays at cell (r, c):
+
+  (a) Place a new disc at (r, c):
+        owner = P
+        color = R   (always Red, regardless of history)
+
+  (b) For each direction d, identify the set of captured discs:
+        CAPTURED(d) = contiguous sequence of opponent discs in
+        direction d terminated by a disc owned by P, if such
+        sequence exists, else empty set
+
+  (c) For each disc at position p in CAPTURED = union of CAPTURED(d):
+        new_owner(p) = P
+        new_color(p) = advance(old_color(p))
+
+        where advance(R) = G
+              advance(G) = B
+              advance(B) = R
+
+  (d) All other discs are unchanged.
+
+The Othello transition is the projection of the Trichrome transition.
+Applying the Trichrome transition and then projecting to S_O gives the
+same result as applying the Othello transition directly.
+
+
+8. FLIP COUNT
+-------------
+For each disc, its flip count is the number of times it has been
+captured since the game began. This is not stored explicitly in S_T
+but can be recovered modulo 3 from the color atribute.
+
+  color = R  <=>  flip_count mod 3 = 0
+  color = G  <=>  flip_count mod 3 = 1
+  color = B  <=>  flip_count mod 3 = 2
+
+The full flip count is not recoverable from S_T alone. S_T is a lossy
+compression of full game history with respect to flip counts.
+
+
+9. EQUIVALENCE CLASSES
+-----------------------
+Define three partitions of the space of all legal move sequences:
+
+  PARTITION_O  :  sequences grouped by S_O at termination
+  PARTITION_T  :  sequences grouped by S_T at termination
+  PARTITION_H  :  sequences grouped by full token sequence (identity)
+
+These form a strict hierarchy of refinement:
+
+  PARTITION_H  is finer than  PARTITION_T
+  PARTITION_T  is finer than  PARTITION_O
+
+For any Othello equivalence class C in PARTITION_O, the Trichrome
+equivalence classes within C form a partition of C into subsets where
+flip counts mod 3 differ for at least one disc.
+
+Formally, two sequences seq1 and seq2 are in the same Othello class
+but different Trichrome classes if and only if:
+
+  S_O(seq1) = S_O(seq2)
+  AND
+  there exists (r, c) such that:
+    S_T(seq1)(r,c) != S_T(seq2)(r,c)
+
+Which requires:
+    owner1(r,c) = owner2(r,c)   [same owner]
+    color1(r,c) != color2(r,c)  [different color]
+
+
+10. TARGET PAIRS FOR EXPERIMENTS
+----------------------------------
+A valid experimental pair (seq1, seq2) satisfies:
+
+  (a) Both sequences are legal Othello game sequences
+  (b) S_O(seq1) = S_O(seq2)             [same Othello state]
+  (c) S_T(seq1) != S_T(seq2)            [different Trichrome state]
+  (d) legal_moves(seq1) = legal_moves(seq2)   [identical legal move sets,
+                                               follows from (b)]
+
+Condition (c) requires at least one cell (r,c) where:
+  - both sequences have a disc at (r,c)
+  - both discs have the same owner
+  - the discs have different colors
+
+The minimum difference is one cell with color differing by one step
+(e.g. R vs G). Larger differences (R vs B, or multiple cells differing)
+are also valid.
+
+
+11. SIMULATOR REQUIREMENTS
+---------------------------
+A correct TO simulator must:
+
+  (a) Accept a sequence of moves as input
+  (b) Maintain S_T throughout — tracking both owner and color per cell
+  (c) Compute legal moves from S_O component only
+  (d) Apply the transition function from section 7 at each move
+  (e) Output S_O and S_T at any point in the sequence
+  (f) Support comparison of S_O and S_T across two sequences
+  (g) Flag pairs satisfying the conditions in section 10
+
+
+12. NOTATION
+------------
+Throughout this specification and associated code:
+
+  Players     : 1 (Black), 2 (White)
+  Colors      : 0 (Red), 1 (Green), 2 (Blue)
+  Empty cell  : owner=0, color=0  (or None)
+  Cell state  : tuple (owner, color)
+  Board       : 8x8 array of cell states
+  Move        : tuple (row, col)  zero-indexed
+  Direction   : one of 8 unit vectors in {-1,0,1}^2 \ {(0,0)}
+
+
+13. WHAT THE SIMULATOR SHOULD PRODUCE
+--------------------------------------
+Primary output for experiments:
+
+  A dataset of pairs (seq1, seq2) where:
+  - seq1 and seq2 are legal move sequences of equal or different length
+  - they reach the same Othello state
+  - they reach different Trichrome states
+  - the specific cells that differ are recorded
+  - the color difference at each differing cell is recorded
+
+This dataset is the empirical foundation for all subsequent experiments.t
