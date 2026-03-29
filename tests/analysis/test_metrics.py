@@ -194,6 +194,11 @@ def test_spearman_range():
     assert -1.0 <= rho <= 1.0
 
 
+def test_spearman_none_for_constant_input():
+    p = weighted_probs()
+    assert spearman_rho(p, uniform_probs(), LEGAL_POSITIONS) is None
+
+
 def test_spearman_none_for_single_legal_move():
     assert spearman_rho(peaked_probs_a(), peaked_probs_b(), [LEGAL_POSITIONS[0]]) is None
 
