@@ -6,6 +6,7 @@ so no corpus data is required to run the test suite.
 """
 
 import pickle
+import random
 import tempfile
 from pathlib import Path
 
@@ -82,7 +83,26 @@ def test_load_championship_empty_lines():
         assert len(games) == 2
 
 
-def test_load_championship_no_files_raises():
+def write_pgn_file(path: Path, games: list[list[str]]) -> None:
+    with open(path, "w") as f:
+        for i, game in enumerate(games):
+            f.write(f'[Event "Test"]\n')
+            f.write(f'[Round "{i+1}"]\n')
+            for j in range(0, len(game), 2):
+                move_num = j // 2 + 1
+                black = game[j]
+                white = game[j+1] if j+1 < len(game) else ""
+                f.write(f"{move_num}. {black} {white}\n".strip() + "\n")
+            f.write("\n")
+
+
+def test_load_championship_pgn():
+    with tempfile.TemporaryDirectory() as tmp:
+        fpath = Path(tmp) / "games.pgn"
+        write_pgn_file(fpath, SAMPLE_GAMES_ALG)
+        games = load_championship(fpath)
+        assert len(games) == 3
+        assert games[0] == SAMPLE_GAMES_ALG[0]
     with tempfile.TemporaryDirectory() as tmp:
         with pytest.raises(FileNotFoundError):
             load_championship(tmp)

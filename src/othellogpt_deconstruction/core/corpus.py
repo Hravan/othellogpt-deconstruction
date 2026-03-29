@@ -28,25 +28,65 @@ from othellogpt_deconstruction.core.tokenizer import itos, pos_to_alg
 # Championship loader
 # ---------------------------------------------------------------------------
 
+def _parse_pgn(path: Path) -> list[list[str]]:
+    """
+    Parse an Othello PGN file into a list of games.
+    Each game is a list of algebraic moves in order.
+
+    PGN format:
+        [Header "value"]   <- skip
+        1. d3 c5           <- move number, black move, white move
+        3. f6 f5
+        ...
+    """
+    games: list[list[str]] = []
+    current: list[str] = []
+
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("["):
+                # Header line — start new game if we have moves accumulated
+                if current:
+                    games.append(current)
+                    current = []
+                continue
+            # Move line: "1. d3 c5" or "1. d3" (last move may be single)
+            parts = line.split()
+            # parts[0] is move number like "1.", skip it
+            moves = [p.lower() for p in parts[1:] if not p.endswith(".")]
+            current.extend(moves)
+
+    if current:
+        games.append(current)
+
+    return games
+
+
 def load_championship(path: str | Path) -> list[list[str]]:
     """
-    Load championship games from a text file or directory of text files.
-    Each line is a game as space-separated algebraic moves.
+    Load championship games from a PGN or text file or directory.
     """
     path = Path(path)
-    files = sorted(path.glob("*.txt")) if path.is_dir() else [path]
+    files = sorted(f for f in path.glob("*") if f.suffix in (".txt", ".pgn")) \
+        if path.is_dir() else [path]
     if not files:
-        raise FileNotFoundError(f"No .txt files found in {path}")
+        raise FileNotFoundError(f"No .txt or .pgn files found in {path}")
 
     games = []
     for fpath in files:
-        with open(fpath) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    moves = [m.lower() for m in line.split()]
-                    if moves:
-                        games.append(moves)
+        if fpath.suffix == ".pgn":
+            games.extend(_parse_pgn(fpath))
+        else:
+            with open(fpath) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        moves = [m.lower() for m in line.split()]
+                        if moves:
+                            games.append(moves)
     return games
 
 
@@ -95,14 +135,14 @@ def load_corpus(path: str | Path) -> list[list[str]]:
         extensions = {f.suffix for f in files if f.is_file()}
         if ".pickle" in extensions:
             return load_synthetic(path)
-        elif ".txt" in extensions:
+        elif extensions & {".txt", ".pgn"}:
             return load_championship(path)
         else:
             raise ValueError(f"Cannot detect corpus format in {path} (extensions: {extensions})")
     else:
         if path.suffix == ".pickle":
             return load_synthetic(path)
-        elif path.suffix == ".txt":
+        elif path.suffix in (".txt", ".pgn"):
             return load_championship(path)
         else:
             raise ValueError(f"Cannot detect corpus format for file {path}")
