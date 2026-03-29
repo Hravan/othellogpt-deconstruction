@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import pytest
 
-from othellogpt_deconstruction.core.tokenizer import stoi, itos, VOCAB_SIZE, alg_to_pos
+from othellogpt_deconstruction.core.tokenizer import stoi, VOCAB_SIZE
 from othellogpt_deconstruction.core.board import legal_moves_after
 from othellogpt_deconstruction.analysis.metrics import (
     metrics_full, metrics_legal, all_metrics,

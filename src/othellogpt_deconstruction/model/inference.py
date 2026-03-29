@@ -147,7 +147,7 @@ def get_distributions_batch(
     -------
     Dict mapping seq_key -> probability tensor of shape (VOCAB_SIZE,).
     """
-    from othellogpt_deconstruction.core.tokenizer import seq_key, pad
+    from othellogpt_deconstruction.core.tokenizer import seq_key
 
     if device is None:
         device = next(model.parameters()).device

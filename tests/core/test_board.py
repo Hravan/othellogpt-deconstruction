@@ -3,12 +3,11 @@ tests/core/test_board.py
 """
 
 import pytest
-import numpy as np
 
 from othellogpt_deconstruction.core.tokenizer import alg_to_pos, pos_to_alg
 from othellogpt_deconstruction.core.board import (
     EMPTY, BLACK, WHITE,
-    start_board, flipped_by, is_legal, legal_moves,
+    start_board, flipped_by, legal_moves,
     apply_move, replay, legal_moves_after,
 )
 

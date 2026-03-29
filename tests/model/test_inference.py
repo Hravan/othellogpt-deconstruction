@@ -11,7 +11,6 @@ import torch
 from othellogpt_deconstruction.core.tokenizer import VOCAB_SIZE, seq_key
 from othellogpt_deconstruction.model.inference import (
     make_config, load_model, get_distribution, get_distributions_batch,
-    CHECKPOINT_PATHS,
 )
 
 # ---------------------------------------------------------------------------

@@ -3,13 +3,11 @@ tests/core/test_trichrome.py
 """
 
 import pytest
-import numpy as np
 
-from othellogpt_deconstruction.core.tokenizer import alg_to_pos, pos_to_alg
+from othellogpt_deconstruction.core.tokenizer import alg_to_pos
 from othellogpt_deconstruction.core.board import EMPTY, BLACK, WHITE
 from othellogpt_deconstruction.core.trichrome import (
-    RED, GREEN, BLUE, COLOR_NAMES,
-    color_distance, start_board, othello_projection,
+    RED, GREEN, BLUE, color_distance, start_board, othello_projection,
     apply_move, replay, diff, trichrome_key,
 )
 

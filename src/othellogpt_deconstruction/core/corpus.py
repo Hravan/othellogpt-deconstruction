@@ -16,7 +16,6 @@ Pickle files containing list[list[int]] where each integer is a token id
 in the OthelloGPT vocabulary (stoi/itos from tokenizer.py).
 """
 
-import os
 import pickle
 import random
 from pathlib import Path

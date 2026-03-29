@@ -6,7 +6,6 @@ so no corpus data is required to run the test suite.
 """
 
 import pickle
-import random
 import tempfile
 from pathlib import Path
 

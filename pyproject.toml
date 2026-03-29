@@ -27,4 +27,8 @@ mingpt = { path = "mingpt", editable = true }
 [dependency-groups]
 dev = [
     "pytest",
+    "ruff",
 ]
+
+[tool.ruff.lint]
+select = ["F401"]

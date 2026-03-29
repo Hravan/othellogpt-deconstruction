@@ -3,7 +3,6 @@ tests/analysis/test_correlations.py
 """
 
 import numpy as np
-import pytest
 
 from othellogpt_deconstruction.analysis.correlations import (
     correlate, print_correlation_table, summarise_correlations,
