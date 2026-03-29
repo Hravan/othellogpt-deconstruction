@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "mingpt",
     "numpy>=2.4.3",
     "scipy>=1.17.1",
     "torch>=2.11.0",
@@ -19,6 +20,9 @@ testpaths = ["tests"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/othellogpt_deconstruction"]
+
+[tool.uv.sources]
+mingpt = { path = "mingpt", editable = true }
 
 [dependency-groups]
 dev = [
