@@ -14,7 +14,7 @@ import pytest
 from othellogpt_deconstruction.core.tokenizer import stoi, alg_to_pos
 from othellogpt_deconstruction.core.corpus import (
     load_championship, load_synthetic, load_corpus, load_corpora,
-    split, sample,
+    iter_corpus_files, split, sample,
 )
 
 # ---------------------------------------------------------------------------
@@ -27,8 +27,9 @@ SAMPLE_GAMES_ALG = [
     ["c4", "c5", "e6", "c3", "b4"],
 ]
 
+
 SAMPLE_GAMES_TOKENS = [
-    [stoi[alg_to_pos(m)] for m in game]
+    [alg_to_pos(m) for m in game]
     for game in SAMPLE_GAMES_ALG
 ]
 
@@ -242,3 +243,56 @@ def test_sample_no_duplicate_indices():
     games = [["f5", str(i)] for i in range(20)]  # 20 unique games
     s = sample(games, 5)
     assert len(s) == len(set(tuple(g) for g in s))
+
+
+# ---------------------------------------------------------------------------
+# iter_corpus_files
+# ---------------------------------------------------------------------------
+
+def test_iter_corpus_files_synthetic_one_file_per_yield():
+    """Each pickle file should be a separate yield."""
+    with tempfile.TemporaryDirectory() as tmp:
+        write_synthetic_file(Path(tmp) / "a.pickle", SAMPLE_GAMES_TOKENS[:2])
+        write_synthetic_file(Path(tmp) / "b.pickle", SAMPLE_GAMES_TOKENS[2:])
+        batches = list(iter_corpus_files([tmp]))
+        assert len(batches) == 2
+
+
+def test_iter_corpus_files_total_games():
+    """Total games across all yields should equal the full corpus size."""
+    with tempfile.TemporaryDirectory() as tmp:
+        write_synthetic_file(Path(tmp) / "a.pickle", SAMPLE_GAMES_TOKENS[:2])
+        write_synthetic_file(Path(tmp) / "b.pickle", SAMPLE_GAMES_TOKENS[2:])
+        all_games = [g for batch in iter_corpus_files([tmp]) for g in batch]
+        assert len(all_games) == 3
+
+
+def test_iter_corpus_files_championship_one_file_per_yield():
+    with tempfile.TemporaryDirectory() as tmp:
+        write_championship_file(Path(tmp) / "a.txt", SAMPLE_GAMES_ALG[:2])
+        write_championship_file(Path(tmp) / "b.txt", SAMPLE_GAMES_ALG[2:])
+        batches = list(iter_corpus_files([tmp]))
+        assert len(batches) == 2
+
+
+def test_iter_corpus_files_mixed_paths():
+    """Multiple paths (one synthetic dir, one championship file) should each yield separately."""
+    with tempfile.TemporaryDirectory() as tmp1, tempfile.TemporaryDirectory() as tmp2:
+        write_synthetic_file(Path(tmp1) / "a.pickle", SAMPLE_GAMES_TOKENS[:1])
+        write_synthetic_file(Path(tmp1) / "b.pickle", SAMPLE_GAMES_TOKENS[1:2])
+        write_championship_file(Path(tmp2) / "c.txt", SAMPLE_GAMES_ALG[2:])
+        batches = list(iter_corpus_files([tmp1, tmp2]))
+        all_games = [g for batch in batches for g in batch]
+        assert len(all_games) == 3
+
+
+def test_iter_corpus_files_content_matches_load():
+    """Games yielded by iter_corpus_files should match load_corpora."""
+    with tempfile.TemporaryDirectory() as tmp:
+        write_synthetic_file(Path(tmp) / "a.pickle", SAMPLE_GAMES_TOKENS[:2])
+        write_synthetic_file(Path(tmp) / "b.pickle", SAMPLE_GAMES_TOKENS[2:])
+        streamed = sorted(
+            tuple(g) for batch in iter_corpus_files([tmp]) for g in batch
+        )
+        loaded = sorted(tuple(g) for g in load_corpora([tmp]))
+        assert streamed == loaded

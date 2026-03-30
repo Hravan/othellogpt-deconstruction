@@ -20,6 +20,7 @@ import pickle
 import random
 from pathlib import Path
 
+from othellogpt_deconstruction.core.tokenizer import START_SQUARES
 from othellogpt_deconstruction.core.tokenizer import itos, pos_to_alg
 
 
@@ -89,14 +90,11 @@ def load_championship(path: str | Path) -> list[list[str]]:
     return games
 
 
-# ---------------------------------------------------------------------------
-# Synthetic loader
-# ---------------------------------------------------------------------------
-
 def load_synthetic(path: str | Path) -> list[list[str]]:
     """
     Load synthetic games from a pickle file or directory of pickle files.
-    Each pickle contains list[list[int]] of token ids.
+    Each pickle contains list[list[int]] of board positions (0-63).
+    Center squares (START_SQUARES) are excluded from moves.
     """
     path = Path(path)
     files = sorted(path.glob("*.pickle")) if path.is_dir() else [path]
@@ -107,8 +105,10 @@ def load_synthetic(path: str | Path) -> list[list[str]]:
     for fpath in files:
         with open(fpath, "rb") as f:
             data = pickle.load(f)
-        for token_ids in data:
-            moves = [pos_to_alg(itos[t]) for t in token_ids if t in itos and itos[t] >= 0]
+        for positions in data:
+            # positions are raw board positions 0-63
+            # filter out center squares (should never appear but be safe)
+            moves = [pos_to_alg(p) for p in positions if p not in START_SQUARES]
             if moves:
                 games.append(moves)
     return games
@@ -160,6 +160,64 @@ def load_corpora(paths: list[str | Path]) -> list[list[str]]:
     for path in paths:
         games.extend(load_corpus(path))
     return games
+
+
+# ---------------------------------------------------------------------------
+# File-level utilities (for memory-efficient processing)
+# ---------------------------------------------------------------------------
+
+def list_corpus_files(paths: list[str | Path]) -> list[Path]:
+    """
+    Return a stable ordered list of all individual files across the given paths.
+    """
+    files = []
+    for path in paths:
+        path = Path(path)
+        if path.is_dir():
+            files.extend(sorted(path.glob("*.pickle")))
+            files.extend(sorted(f for f in path.glob("*") if f.suffix in (".txt", ".pgn")))
+        else:
+            files.append(path)
+    return files
+
+
+def load_file(path: str | Path) -> list[list[str]]:
+    """Load games from a single file, auto-detecting format."""
+    path = Path(path)
+    if path.suffix == ".pickle":
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+        games = []
+        for positions in data:
+            moves = [pos_to_alg(p) for p in positions if p not in START_SQUARES]
+            if moves:
+                games.append(moves)
+        return games
+    elif path.suffix == ".pgn":
+        return _parse_pgn(path)
+    elif path.suffix == ".txt":
+        games = []
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    moves = [m.lower() for m in line.split()]
+                    if moves:
+                        games.append(moves)
+        return games
+    else:
+        raise ValueError(f"Unknown file format: {path.suffix}")
+
+
+def iter_corpus_files(paths: list[str | Path]):
+    """
+    Yield one file's worth of games at a time across all given paths.
+
+    Each yield is a list[list[str]] for a single file, so callers can
+    process and discard it before loading the next file.
+    """
+    for path in list_corpus_files(paths):
+        yield load_file(path)
 
 
 # ---------------------------------------------------------------------------

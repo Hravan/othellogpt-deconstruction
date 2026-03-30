@@ -1,8 +1,11 @@
 """
 tests/analysis/test_transpositions.py
 """
+import numpy as np
+
 from othellogpt_deconstruction.analysis.transpositions import (
-    find_transpositions, summarise,
+    find_transpositions, index_games, build_groups, summarise,
+    index_chunk_games, find_candidates_from_arrays, build_groups_from_compact,
 )
 
 # ---------------------------------------------------------------------------
@@ -166,3 +169,168 @@ def test_summarise_mixed_at_least_one():
     groups = find_transpositions(CORPUS)
     s = summarise(groups)
     assert s["mixed_trichrome"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# index_games + build_groups
+# ---------------------------------------------------------------------------
+
+def test_index_build_matches_find_transpositions():
+    """index_games + build_groups should produce the same groups as find_transpositions."""
+    groups = build_groups(index_games(CORPUS))
+    expected = find_transpositions(CORPUS)
+
+    assert len(groups) == len(expected)
+    result_keys   = {frozenset(tuple(s) for s in g.sequences) for g in groups}
+    expected_keys = {frozenset(tuple(s) for s in g.sequences) for g in expected}
+    assert result_keys == expected_keys
+
+
+def test_index_games_empty():
+    assert index_games([]) == {}
+
+
+def test_build_groups_empty_index():
+    assert build_groups({}) == []
+
+
+def test_build_groups_no_duplicates():
+    groups = build_groups(index_games(CORPUS))
+    seen = set()
+    for g in groups:
+        key = frozenset(tuple(s) for s in g.sequences)
+        assert key not in seen
+        seen.add(key)
+
+
+def test_build_groups_sorted_by_ply():
+    groups = build_groups(index_games(CORPUS))
+    plies = [g.ply for g in groups]
+    assert plies == sorted(plies)
+
+
+def test_index_games_min_max_ply():
+    """min_ply/max_ply should restrict which positions are indexed."""
+    state_index_restricted = index_games(CORPUS, min_ply=6, max_ply=59)
+    for key in state_index_restricted:
+        assert key[0] >= 6
+
+
+# ---------------------------------------------------------------------------
+# index_chunk_games + find_candidates_from_arrays + build_groups_from_compact
+# ---------------------------------------------------------------------------
+
+def test_index_chunk_games_returns_five_arrays():
+    ply_arr, black_mask_arr, white_mask_arr, file_idx_arr, game_idx_arr = \
+        index_chunk_games(CORPUS, file_idx=0, ply_start=2, ply_end=6)
+    assert len(ply_arr) == len(black_mask_arr) == len(white_mask_arr) \
+        == len(file_idx_arr) == len(game_idx_arr)
+
+
+def test_index_chunk_games_dtypes():
+    ply_arr, black_mask_arr, white_mask_arr, file_idx_arr, game_idx_arr = \
+        index_chunk_games(CORPUS, file_idx=0, ply_start=2, ply_end=6)
+    assert ply_arr.dtype        == np.int16
+    assert black_mask_arr.dtype == np.uint64
+    assert white_mask_arr.dtype == np.uint64
+    assert file_idx_arr.dtype   == np.int32
+    assert game_idx_arr.dtype   == np.int32
+
+
+def test_index_chunk_games_ply_range():
+    ply_arr, *_ = index_chunk_games(CORPUS, file_idx=0, ply_start=3, ply_end=5)
+    assert (ply_arr >= 3).all()
+    assert (ply_arr < 5).all()
+
+
+def test_index_chunk_games_empty_corpus():
+    ply_arr, black_mask_arr, white_mask_arr, file_idx_arr, game_idx_arr = \
+        index_chunk_games([], file_idx=0, ply_start=2, ply_end=6)
+    assert len(ply_arr) == 0
+
+
+def test_find_candidates_empty():
+    empty_int16  = np.empty(0, dtype=np.int16)
+    empty_uint64 = np.empty(0, dtype=np.uint64)
+    empty_int32  = np.empty(0, dtype=np.int32)
+    result = find_candidates_from_arrays(
+        empty_int16, empty_uint64, empty_uint64, empty_int32, empty_int32,
+    )
+    assert result == {}
+
+
+def test_numpy_pipeline_matches_find_transpositions():
+    """index_chunk_games + find_candidates_from_arrays + build_groups_from_compact
+    must find the same transposition groups as find_transpositions."""
+    # Build candidates via numpy pipeline (one chunk covering all plies)
+    ply_arr, black_mask_arr, white_mask_arr, file_idx_arr, game_idx_arr = \
+        index_chunk_games(CORPUS, file_idx=0, ply_start=2, ply_end=60)
+    candidates = find_candidates_from_arrays(
+        ply_arr, black_mask_arr, white_mask_arr, file_idx_arr, game_idx_arr,
+    )
+
+    # game_lookup: all games are in file 0
+    game_lookup = {(0, game_idx): game for game_idx, game in enumerate(CORPUS)}
+
+    groups = build_groups_from_compact(candidates, game_lookup)
+    expected = find_transpositions(CORPUS)
+
+    assert len(groups) == len(expected)
+    result_keys   = {frozenset(tuple(seq) for seq in group.sequences) for group in groups}
+    expected_keys = {frozenset(tuple(seq) for seq in group.sequences) for group in expected}
+    assert result_keys == expected_keys
+
+
+def test_numpy_pipeline_known_pair():
+    """The numpy pipeline must detect the known transposition pair."""
+    ply_arr, black_mask_arr, white_mask_arr, file_idx_arr, game_idx_arr = \
+        index_chunk_games(CORPUS, file_idx=0, ply_start=2, ply_end=60)
+    candidates = find_candidates_from_arrays(
+        ply_arr, black_mask_arr, white_mask_arr, file_idx_arr, game_idx_arr,
+    )
+    game_lookup = {(0, game_idx): game for game_idx, game in enumerate(CORPUS)}
+    groups = build_groups_from_compact(candidates, game_lookup)
+
+    known = frozenset(tuple(seq) for seq in KNOWN_PAIR)
+    seq_sets = [frozenset(tuple(seq) for seq in group.sequences) for group in groups]
+    assert any(known.issubset(seq_set) for seq_set in seq_sets)
+
+
+def test_numpy_pipeline_chunked_matches_single_pass():
+    """Processing in two ply chunks must give the same result as one big chunk."""
+    game_lookup = {(0, game_idx): game for game_idx, game in enumerate(CORPUS)}
+
+    # Single pass
+    ply_arr, black_mask_arr, white_mask_arr, file_idx_arr, game_idx_arr = \
+        index_chunk_games(CORPUS, file_idx=0, ply_start=2, ply_end=60)
+    candidates_single = find_candidates_from_arrays(
+        ply_arr, black_mask_arr, white_mask_arr, file_idx_arr, game_idx_arr,
+    )
+    groups_single = build_groups_from_compact(candidates_single, game_lookup)
+
+    # Two chunks
+    ply_arr_a, black_mask_arr_a, white_mask_arr_a, file_idx_arr_a, game_idx_arr_a = \
+        index_chunk_games(CORPUS, file_idx=0, ply_start=2, ply_end=5)
+    ply_arr_b, black_mask_arr_b, white_mask_arr_b, file_idx_arr_b, game_idx_arr_b = \
+        index_chunk_games(CORPUS, file_idx=0, ply_start=5, ply_end=60)
+
+    candidates_chunked: dict = {}
+    for chunk_candidates in [
+        find_candidates_from_arrays(
+            ply_arr_a, black_mask_arr_a, white_mask_arr_a, file_idx_arr_a, game_idx_arr_a,
+        ),
+        find_candidates_from_arrays(
+            ply_arr_b, black_mask_arr_b, white_mask_arr_b, file_idx_arr_b, game_idx_arr_b,
+        ),
+    ]:
+        for key, refs in chunk_candidates.items():
+            if key in candidates_chunked:
+                candidates_chunked[key].update(refs)
+            else:
+                candidates_chunked[key] = refs
+
+    groups_chunked = build_groups_from_compact(candidates_chunked, game_lookup)
+
+    result_keys  = {frozenset(tuple(seq) for seq in group.sequences) for group in groups_single}
+    chunked_keys = {frozenset(tuple(seq) for seq in group.sequences) for group in groups_chunked}
+    assert result_keys == chunked_keys
