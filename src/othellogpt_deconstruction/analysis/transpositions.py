@@ -11,8 +11,10 @@ sequences by their Trichrome state (S_T). Groups where sequences differ
 in S_T are flagged with cell-level diffs.
 """
 
+import heapq
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
@@ -298,6 +300,110 @@ def build_groups_from_compact(
         results.append(_annotate_group(ply, board, seq_list))
 
     return sorted(results, key=lambda g: g.ply)
+
+
+# ---------------------------------------------------------------------------
+# Sort-merge on disk API for very large corpora (10M+ games)
+# ---------------------------------------------------------------------------
+
+# Structured dtype for binary temp files: 26 bytes per row.
+ROW_DTYPE = np.dtype([
+    ('ply',        np.int16),
+    ('black_mask', np.uint64),
+    ('white_mask', np.uint64),
+    ('file_idx',   np.int32),
+    ('game_idx',   np.int32),
+])
+
+# Number of rows to buffer per file during the merge pass.
+_MERGE_BUFFER_ROWS = 500_000
+
+
+def write_sorted_file(
+    games:    list[list[str]],
+    file_idx: int,
+    out_path: Path,
+    min_ply:  int = 2,
+    max_ply:  int = 59,
+) -> int:
+    """
+    Replay all games at all plies in [min_ply, max_ply], encode board states
+    as bitmasks, sort rows by (ply, black_mask, white_mask), and write to
+    out_path as a binary file of ROW_DTYPE records.
+
+    Each game is replayed exactly once. Returns the number of rows written.
+    """
+    ply_arr, black_mask_arr, white_mask_arr, file_idx_arr, game_idx_arr = \
+        index_chunk_games(games, file_idx, min_ply, max_ply + 1)
+
+    if len(ply_arr) == 0:
+        np.empty(0, dtype=ROW_DTYPE).tofile(out_path)
+        return 0
+
+    sort_order = np.lexsort((white_mask_arr, black_mask_arr, ply_arr))
+
+    rows = np.empty(len(ply_arr), dtype=ROW_DTYPE)
+    rows['ply']        = ply_arr[sort_order]
+    rows['black_mask'] = black_mask_arr[sort_order]
+    rows['white_mask'] = white_mask_arr[sort_order]
+    rows['file_idx']   = file_idx_arr[sort_order]
+    rows['game_idx']   = game_idx_arr[sort_order]
+
+    rows.tofile(out_path)
+    return len(rows)
+
+
+def _stream_sorted_file(path: Path):
+    """
+    Stream rows from a sorted binary file as plain Python tuples,
+    reading in chunks to avoid loading the whole file into RAM at once.
+    """
+    rows = np.memmap(path, dtype=ROW_DTYPE, mode='r')
+    for chunk_start in range(0, len(rows), _MERGE_BUFFER_ROWS):
+        chunk = np.array(rows[chunk_start : chunk_start + _MERGE_BUFFER_ROWS])
+        yield from zip(
+            chunk['ply'].tolist(),
+            chunk['black_mask'].tolist(),
+            chunk['white_mask'].tolist(),
+            chunk['file_idx'].tolist(),
+            chunk['game_idx'].tolist(),
+        )
+
+
+def merge_sorted_files(
+    temp_paths: list[Path],
+) -> dict[tuple, set[tuple[int, int]]]:
+    """
+    K-way merge of sorted binary temp files to find transposition candidates.
+
+    Streams all files simultaneously in (ply, black_mask, white_mask) order
+    using heapq.merge. Collects (file_idx, game_idx) refs for every board
+    state seen in 2+ distinct games.
+
+    Returns dict mapping (ply, black_mask, white_mask) -> set of (file_idx, game_idx),
+    compatible with build_groups_from_compact.
+    """
+    candidates: dict[tuple, set[tuple[int, int]]] = {}
+
+    current_key  = None
+    current_refs: set[tuple[int, int]] = set()
+
+    for ply, black_mask, white_mask, file_idx, game_idx in heapq.merge(
+        *(_stream_sorted_file(path) for path in temp_paths)
+    ):
+        key = (ply, black_mask, white_mask)
+        if key != current_key:
+            if current_key is not None and len(current_refs) >= 2:
+                candidates[current_key] = current_refs
+            current_key  = key
+            current_refs = {(file_idx, game_idx)}
+        else:
+            current_refs.add((file_idx, game_idx))
+
+    if current_key is not None and len(current_refs) >= 2:
+        candidates[current_key] = current_refs
+
+    return candidates
 
 
 # ---------------------------------------------------------------------------
