@@ -228,9 +228,9 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated layer indices to train probes for (default: all layers)",
     )
     parser.add_argument(
-        "--max-samples", type=int, default=None,
-        help="Hard cap on total samples collected per layer (default: no limit). "
-             "Use to prevent OOM when n-games is large.",
+        "--max-samples", type=int, default=200_000,
+        help="Hard cap on total samples collected per layer (default: 200000). "
+             "Pass 0 for no limit (unsafe on large corpora).",
     )
     parser.add_argument(
         "--seed", type=int, default=42,
@@ -259,6 +259,7 @@ def main() -> None:
     else:
         sampled_games = all_games
 
+    max_samples = args.max_samples if args.max_samples != 0 else None
     layers_to_train = [int(l) for l in args.layers.split(",")] if args.layers else list(range(len(model.blocks)))
 
     # Collect and train one layer at a time to keep memory usage constant.
@@ -276,7 +277,7 @@ def main() -> None:
             device=device,
             rng=rng_layer,
             layers=[layer_idx],
-            max_samples=args.max_samples,
+            max_samples=max_samples,
         )
         probe = train_probe_for_layer(
             activations_by_layer[layer_idx],
