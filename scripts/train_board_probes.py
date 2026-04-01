@@ -18,9 +18,12 @@ Usage
 
 import argparse
 import random
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
+import psutil
 import torch
 from sklearn.linear_model import LogisticRegression
 
@@ -30,6 +33,43 @@ from othellogpt_deconstruction.intervention.hooks import collect_activations
 from othellogpt_deconstruction.model.board_probe import make_labels, EMPTY, MINE, YOURS
 from othellogpt_deconstruction.model.inference import load_model
 from othellogpt_deconstruction.model.probes import TrichromeProbe, save_probes
+
+
+# ---------------------------------------------------------------------------
+# Memory monitor
+# ---------------------------------------------------------------------------
+
+class MemoryMonitor:
+    """
+    Background thread that prints RSS when it increases by at least threshold_mb.
+    Use as a context manager.
+    """
+    def __init__(self, threshold_mb: float = 100.0, poll_interval: float = 1.0):
+        self._threshold_mb   = threshold_mb
+        self._poll_interval  = poll_interval
+        self._process        = psutil.Process()
+        self._stop_event     = threading.Event()
+        self._thread         = threading.Thread(target=self._run, daemon=True)
+        self._last_reported  = 0.0
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            current_mb = self._process.memory_info().rss / 1024 ** 2
+            if current_mb - self._last_reported >= self._threshold_mb:
+                print(f"  [mem] {current_mb:.0f} MB RSS")
+                self._last_reported = current_mb
+            time.sleep(self._poll_interval)
+
+    def __enter__(self) -> "MemoryMonitor":
+        self._last_reported = self._process.memory_info().rss / 1024 ** 2
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_) -> None:
+        self._stop_event.set()
+        self._thread.join()
+        final_mb = self._process.memory_info().rss / 1024 ** 2
+        print(f"  [mem] {final_mb:.0f} MB RSS (end)")
 
 
 # ---------------------------------------------------------------------------
@@ -269,21 +309,22 @@ def main() -> None:
         print(f"\nLayer {layer_idx}: collecting activations "
               f"({len(sampled_games)} games × {args.n_timesteps_per_game} timesteps)...")
         rng_layer = random.Random(args.seed)  # same sample each pass
-        activations_by_layer, board_labels = collect_data(
-            model,
-            sampled_games,
-            n_timesteps_per_game=args.n_timesteps_per_game,
-            min_ply=args.min_ply,
-            device=device,
-            rng=rng_layer,
-            layers=[layer_idx],
-            max_samples=max_samples,
-        )
-        probe = train_probe_for_layer(
-            activations_by_layer[layer_idx],
-            board_labels,
-            layer_idx,
-        )
+        with MemoryMonitor():
+            activations_by_layer, board_labels = collect_data(
+                model,
+                sampled_games,
+                n_timesteps_per_game=args.n_timesteps_per_game,
+                min_ply=args.min_ply,
+                device=device,
+                rng=rng_layer,
+                layers=[layer_idx],
+                max_samples=max_samples,
+            )
+            probe = train_probe_for_layer(
+                activations_by_layer[layer_idx],
+                board_labels,
+                layer_idx,
+            )
         probes[layer_idx] = probe
         del activations_by_layer, board_labels
 
