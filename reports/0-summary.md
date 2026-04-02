@@ -8,6 +8,38 @@ We conduct three lines of attack.
 
 ---
 
+## Methodological Critique: Representation is in the Eye of the Beholder
+
+Nanda et al. write, in their own paper (page 6):
+
+> "what constitutes a natural feature may be in the eye of the beholder."
+
+We take this as the motto of the entire research programme — and as an inadvertent admission of its core weakness.
+
+### The framework is unfalsifiable
+
+The world model claim is operationalised entirely through metrics that the authors design, control, and evaluate: probe accuracy, intervention alignment, top-N error rates. There is no external ground truth for what a world model actually is. Within this framework, every negative result has an escape hatch:
+
+- Intervention fails → probe was bad; use a better probe
+- Probe accuracy is low → wrong data distribution; use the right one
+- Alignment is low → wrong layer; sweep more layers
+
+No result can falsify the claim, because any failure can be attributed to a methodological shortcoming rather than the absence of a world model. Our attacks are valuable precisely because they use the authors' own metrics against them — showing the metric is confounded (legal set overlap), the alignment collapses immediately beyond one step (rollout persistence), and the same intervention fails entirely on the championship model.
+
+### Representations are found by search, not predicted
+
+Neither Li nor Nanda specify *a priori* where the world model representation should live. Instead, both papers sweep over layers, probe types, intervention configurations, and numbers of flipped cells, reporting the configuration that produces the best numbers. Li reports "L_τ = 4 gives the best result" — best out of how many configurations tried? Nanda identifies layer 5 as optimal. These are post-hoc discoveries, not predictions.
+
+This is a structural form of p-hacking at the architectural level. With enough probes, enough layers, and enough intervention configurations, you will always find *something* that looks like board state encoding. A sufficiently expressive probe applied to any intermediate representation of a model trained on a structured task will find structure — because the model has learned structure. The question is whether the found representation is causally privileged in the model's computation, and their answer to that (the intervention) is itself found by the same brute-force search.
+
+The result is that Li's layer 4 and Nanda's layer 5 may be measuring different things in the same model, with no principled basis for choosing between them. The representation is wherever the probe finds it — which is, as Nanda admits, in the eye of the beholder.
+
+### The probe defines the claim it verifies
+
+In Li's intervention, the non-linear probe is used both to **define** B' in activation space (by gradient descent against the probe's loss) and to **verify** that the model tracks B' (by checking the probe's output post-intervention). The probe is doing double duty. If the probe is even slightly misaligned with the model's actual board-state circuit, both the forcing and the verification are correlated errors — the system finds activations that satisfy the probe and then confirms that those activations satisfy the probe. This is circular.
+
+---
+
 ## Attack 1: The Model is Path-Dependent (Report 1)
 
 **Setup.** A transposition is a pair of distinct move sequences that reach the same Othello board state at the same ply. If OthelloGPT reasons from a world model of board state, identical boards should produce identical output distributions regardless of the path taken. We extracted 12,894 transposition pairs from the championship corpus and measured distributional divergence.
@@ -101,12 +133,19 @@ Our attacks apply directly to this experiment:
 
 **The same legal set overlap confound applies.** Li's top-N error metric has the same structure as Nanda's. If flipping cells to construct the unnatural state barely changes the legal move set, most of the apparent improvement is free from overlap. Li does not report the null baseline (original model vs legal(B')) for either benchmark.
 
-**The 0.06 error on illegal states is suspicious.** It is lower than the 0.12 on legal states, despite illegal states being "far from anything encountered in the training distribution." If the model genuinely tracked an interventionally-imposed illegal board state, steering should be harder, not easier. The most likely explanation is that illegal board states have smaller legal move sets on average — fewer possible moves makes the top-N metric trivially easier to satisfy by chance, and the legal set overlap confound is larger. This is a testable prediction.
+**The 0.06 error on illegal states is suspicious.** It is lower than the 0.12 on legal states, despite illegal states being "far from anything encountered in the training distribution." If the model genuinely tracked an interventionally-imposed illegal board state, steering should be harder, not easier.
+
+We tested whether this is explained by smaller legal move sets for illegal states. For single-cell flips (n_flips=1, n=49,961), the mean legal move set sizes are:
+- mean |legal(B)| = 9.09
+- mean |legal(B')| = 9.26
+
+B' has slightly *more* legal moves than B on average — the set size hypothesis is not supported for single-cell flips. The metric confound for single-cell flips is purely about overlap (94.8%), not set size. This sharpens the argument: even without invoking set size effects, the 94.8% overlap alone explains the gap between 70% apparent improvement and 17% actual drift from B.
+
+Whether the set size hypothesis holds for Li's specific unnatural construction (which likely flips many more cells) remains untested. Li does not report their exact construction procedure in sufficient detail to replicate precisely.
 
 **Pending experiments:**
-1. Replicate Li's natural/unnatural benchmark, computing legal set overlap and the null baseline for both subsets.
-2. Measure mean legal move set size for natural vs unnatural states — if smaller for unnatural, it explains the 0.06 vs 0.12 gap without any reference to world models.
-3. Run rollout persistence on unnatural states: if the model genuinely internalised the illegal board state, subsequent play should remain consistent with it.
+1. Replicate Li's natural/unnatural benchmark, computing legal set overlap, null baseline, and mean legal set sizes for both subsets.
+2. Run rollout persistence on unnatural states: if the model genuinely internalised the illegal board state, subsequent play should remain consistent with it.
 
 ---
 
