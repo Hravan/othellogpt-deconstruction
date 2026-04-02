@@ -296,8 +296,13 @@ def report(all_results: list[dict], n_flips: int, n_rollout: int) -> None:
     intv_vs_target   = np.mean([r["intervened_vs_target"] for r in all_results])
     intv_vs_source   = np.mean([r["intervened_vs_source"] for r in all_results])
 
+    mean_n_legal_source = np.mean([r["n_legal_source"] for r in all_results])
+    mean_n_legal_target = np.mean([r["n_legal_target"] for r in all_results])
+
     col = 28
-    print(f"\n  {'legal set overlap':.<{col}} {overlap:.3f}")
+    print(f"\n  {'mean |legal(B)|':.<{col}} {mean_n_legal_source:.2f}")
+    print(f"  {'mean |legal(B′)|':.<{col}} {mean_n_legal_target:.2f}")
+    print(f"  {'legal set overlap':.<{col}} {overlap:.3f}")
     print(f"  {'original model vs legal(B)':.<{col}} {orig_vs_source:.3f}  [baseline: should be ~0]")
     print(f"  {'original model vs legal(B′)':.<{col}} {orig_vs_target:.3f}  [Nanda's null intervention]")
     print(f"  {'intervened model vs legal(B′)':.<{col}} {intv_vs_target:.3f}  [Nanda's claim]")
