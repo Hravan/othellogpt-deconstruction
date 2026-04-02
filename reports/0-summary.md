@@ -119,7 +119,7 @@ OthelloGPT was trained on game sequences drawn from the same pool used for probi
 
 | Claim | Evidence against |
 |---|---|
-| Model reasons from board state | 25.6% rank-1 disagreement on transpositions; path-dependent activations causally increase illegal moves |
+| Model reasons from board state | SS = 0.230, CR = 25.6%; path-dependent activations causally increase illegal moves |
 | Intervention proves causal board tracking | 94% legal set overlap explains 65–70% apparent improvement; model drifts only 14–17% from B |
 | World model persists beyond one step | Post-intervention rollout is 8–37× more illegal than baseline on synthetic model |
 | World model is general | Intervention is 70% effective on synthetic model, <1% on championship model — same game, same intervention |
@@ -146,6 +146,53 @@ Whether the set size hypothesis holds for Li's specific unnatural construction (
 **Pending experiments:**
 1. Replicate Li's natural/unnatural benchmark, computing legal set overlap, null baseline, and mean legal set sizes for both subsets.
 2. Run rollout persistence on unnatural states: if the model genuinely internalised the illegal board state, subsequent play should remain consistent with it.
+
+---
+
+## Semantic Sensitivity: A Formal Metric for Stochastic Parrots
+
+Our experimental findings connect to a broader question: what does it mean for a language model to be a "stochastic parrot" (Bender et al. 2021)? A stochastic parrot does not track meaning — it tracks surface form. Our transposition analysis operationalises this precisely in OthelloGPT: *transpositions are identical in meaning (same board state) but differ in surface form (move history)*. The model's sensitivity to this difference is exactly what we want to quantify.
+
+We define three metrics:
+
+**Semantic Sensitivity (SS):**
+
+$$SS(M, [x]) = \frac{2}{n(n-1)} \sum_{i < j} \mathrm{TV}(M(x_i), M(x_j))$$
+
+$$SS(M, \Gamma) = \mathbb{E}_{[x] \sim \Gamma}[SS(M, [x])]$$
+
+where $\mathrm{TV}(p, q) = \frac{1}{2} \sum_v |p(v) - q(v)|$ is total variation distance, $[x] = \{x_1, \ldots, x_n\}$ is a semantic equivalence class (a transposition group), and $\Gamma$ is the corpus distribution over equivalence classes. $SS \in [0, 1]$: 0 means the model is perfectly invariant to path; 1 means maximally inconsistent.
+
+**Semantic Stability Score:**
+
+$$SSS(M, \Gamma) = 1 - SS(M, \Gamma)$$
+
+**Contradiction Rate (CR):**
+
+$$CR(M, [x]) = \frac{2}{n(n-1)} \sum_{i < j} \mathbf{1}[\arg\max M(x_i) \neq \arg\max M(x_j)]$$
+
+$$CR(M, \Gamma) = \mathbb{E}_{[x] \sim \Gamma}[CR(M, [x])]$$
+
+CR is the fraction of equivalence-class pairs where the model's top-1 prediction disagrees. This is the stochastic parrot test operationalised as a metric: a model with no world model of meaning will exhibit high CR on semantic equivalence classes.
+
+**OthelloGPT results** (12,894 transposition pairs, synthetic model):
+
+| Metric | Value |
+|---|---|
+| SS | 0.230 |
+| SSS | 0.770 |
+| CR | 0.256 |
+
+OthelloGPT's CR of 0.256 means that in 25.6% of pairs of games reaching the same board state, the model gives a different top-1 move prediction. Its output is sensitive to path, not meaning.
+
+**Mechanistic predictor.** The Trichrome diff (number of cells with different flip counts between two paths to the same board) explains SS variance: Spearman ρ = 0.205 between number of differing Trichrome cells and TV distance (p < 0.01). This means the model's sensitivity to path-dependent history is predicted by how different the two sequences' histories are — consistent with the model encoding Trichrome state as a causally active signal alongside board state.
+
+**Novelty.** The metric is novel on three dimensions relative to prior work:
+1. *Full distributional comparison*: uses TV distance over the full output distribution, not log-likelihood ratios on a target token as in existing sensitivity measures.
+2. *Ground-truth semantic equivalence*: uses exact game-theoretic equivalence (transpositions), not approximate paraphrases or back-translation.
+3. *Mechanistic decomposition*: regresses SS against trichrome predictors to identify what path-dependent information drives inconsistency.
+
+The connection to stochastic parrots is direct: the same failure mode that makes LLMs give inconsistent answers to semantically equivalent prompts (e.g. "Is X harmful?" vs "Is it harmful to do X?") is what drives OthelloGPT's path-dependence. SS formalises this as a testable property of any model with a defined semantic equivalence relation.
 
 ---
 
