@@ -125,7 +125,7 @@ OthelloGPT was trained on game sequences drawn from the same pool used for probi
 | World model is general | Intervention is 70% effective on synthetic model, <1% on championship model — same game, same intervention |
 | Representation reflects the game | Probe accuracy drops cross-dataset (0.974 → 0.927); championship model representations less linearly decodable |
 
-## Li's Unnatural Board State Experiment (pending replication)
+## Li's Unnatural Board State Experiment
 
 Li et al. run the same intervention on two benchmarks: a "natural" subset of 1,000 positions reachable by legal play, and an "unnatural" subset of 1,000 positions unreachable by any legal game sequence. They report average top-N errors of 0.12 (natural) and 0.06 (unnatural) after intervention, compared to baselines of 2.68 and 2.59. They interpret the low error on unnatural states as strong evidence that the representation is causal even for board states the model has never encountered.
 
@@ -135,16 +135,46 @@ Our attacks apply directly to this experiment:
 
 **The 0.06 error on illegal states is suspicious.** It is lower than the 0.12 on legal states, despite illegal states being "far from anything encountered in the training distribution." If the model genuinely tracked an interventionally-imposed illegal board state, steering should be harder, not easier.
 
+### Natural benchmark replication (n=998)
+
+We replicated Li's intervention on positions drawn from legal synthetic game sequences. All metrics are computed with a single-cell flip (BLACK↔WHITE).
+
+| Metric | Value |
+|---|---|
+| mean \|legal(B)\| | 9.06 |
+| mean \|legal(B')\| | 9.24 |
+| Legal set overlap | 0.949 |
+| Original model vs legal(B) | 0.012 (baseline; expected ~0) |
+| Original model vs legal(B') | 1.216 (null baseline — **not reported by Li**) |
+| Intervened model vs legal(B') | 0.240 (Li's claimed metric) |
+| Intervened model vs legal(B) | 0.479 (drift from B) |
+| Improvement toward B' | 80.2% of maximum |
+| Drift from B | 38.4% of maximum |
+
+The confound is present here as in the Nanda case: 80.2% apparent improvement but only 38.4% drift from B, a 42pp gap explained by the 94.9% overlap. Li's claimed improvement is substantially inflated.
+
+Rollout persistence (10 steps, n=998):
+
+| | Rate |
+|---|---|
+| Baseline illegal rate (no intervention) | 0.3% (n=955) |
+| Post-intervention illegal rate (m* legal for B') | 6.8% (n=953) |
+| Post-intervention illegal rate (m* unique to B') | 0.0% (n=11; sample too small) |
+
+Post-intervention play is ~23× more illegal than baseline. Only 1.1% of positions (11/998) produce an m* genuinely unique to B'. The 0.0% illegal rate for that subset is not interpretable — n=11 is too small to detect a 6.8% signal.
+
 We tested whether this is explained by smaller legal move sets for illegal states. For single-cell flips (n_flips=1, n=49,961), the mean legal move set sizes are:
 - mean |legal(B)| = 9.09
 - mean |legal(B')| = 9.26
 
-B' has slightly *more* legal moves than B on average — the set size hypothesis is not supported for single-cell flips. The metric confound for single-cell flips is purely about overlap (94.8%), not set size. This sharpens the argument: even without invoking set size effects, the 94.8% overlap alone explains the gap between 70% apparent improvement and 17% actual drift from B.
+B' has slightly *more* legal moves than B on average — the set size hypothesis is not supported for single-cell flips. The metric confound for single-cell flips is purely about overlap (94.8%), not set size. This sharpens the argument: even without invoking set size effects, the 94.8% overlap alone explains the gap between apparent improvement and actual drift from B.
 
 Whether the set size hypothesis holds for Li's specific unnatural construction (which likely flips many more cells) remains untested. Li does not report their exact construction procedure in sufficient detail to replicate precisely.
 
+### Unnatural benchmark (pending)
+
 **Pending experiments:**
-1. Replicate Li's natural/unnatural benchmark, computing legal set overlap, null baseline, and mean legal set sizes for both subsets.
+1. Construct unnatural positions (board states unreachable by legal play) and run Li's intervention, computing legal set overlap, null baseline, and mean legal set sizes.
 2. Run rollout persistence on unnatural states: if the model genuinely internalised the illegal board state, subsequent play should remain consistent with it.
 
 ---
