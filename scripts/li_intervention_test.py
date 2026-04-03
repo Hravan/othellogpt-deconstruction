@@ -226,39 +226,46 @@ def li_full_intervention(
 
     Intervenes at layer_start, propagates through each subsequent layer,
     re-intervening at each one. Returns final softmax probabilities.
+
+    We intervene at position `seq_length - 1` (the last real token, not the
+    last padded position). predict() is position-wise (ln_f + head only), so
+    the output at seq_length - 1 only depends on the hidden state at that
+    position — intervening at the wrong position would have zero effect.
     """
+    last_pos = seq_length - 1
+
     # Stage 1: run blocks 0..layer_start-1
     with torch.no_grad():
         whole_mid_act = model.forward_1st_stage(x)  # [1, T, 512]
 
     # First intervention (before block layer_start)
-    mid_act = whole_mid_act[0, -1]
+    mid_act = whole_mid_act[0, last_pos]
     probe_labels = labels_current.clone()
     new_mid_act = li_intervene(
         probes[layer_start], mid_act, probe_labels,
         flip_position, flip_to, lr, steps, reg_strength,
     )
     whole_mid_act = whole_mid_act.detach().clone()
-    whole_mid_act[0, -1] = new_mid_act
+    whole_mid_act[0, last_pos] = new_mid_act
 
     # Stage 2: propagate through layers, re-intervening at each
     for layer in range(layer_start, layer_end - 1):
         with torch.no_grad():
             whole_mid_act = model.forward_2nd_stage(whole_mid_act, layer, layer + 1)[0]
 
-        mid_act = whole_mid_act[0, -1]
+        mid_act = whole_mid_act[0, last_pos]
         probe_labels = labels_current.clone()
         new_mid_act = li_intervene(
             probes[layer + 1], mid_act, probe_labels,
             flip_position, flip_to, lr, steps, reg_strength,
         )
         whole_mid_act = whole_mid_act.detach().clone()
-        whole_mid_act[0, -1] = new_mid_act
+        whole_mid_act[0, last_pos] = new_mid_act
 
     # Final prediction
     with torch.no_grad():
         logits, _ = model.predict(whole_mid_act)
-    last_logits = logits[0, seq_length - 1, :].clone()
+    last_logits = logits[0, last_pos, :].clone()
     last_logits[PAD_ID] = float("-inf")
     return torch.softmax(last_logits, dim=-1)
 
