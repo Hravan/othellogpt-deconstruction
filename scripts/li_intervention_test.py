@@ -245,12 +245,10 @@ def li_full_intervention(
         probes[layer_start], mid_act, probe_labels,
         flip_position, flip_to, lr, steps, reg_strength,
     )
-    delta_layer_start = float(torch.norm(new_mid_act - mid_act).item())
     whole_mid_act = whole_mid_act.detach().clone()
     whole_mid_act[0, last_pos] = new_mid_act
 
     # Stage 2: propagate through layers, re-intervening at each
-    activation_deltas = {layer_start: delta_layer_start}
     for layer in range(layer_start, layer_end - 1):
         with torch.no_grad():
             whole_mid_act = model.forward_2nd_stage(whole_mid_act, layer, layer + 1)[0]
@@ -261,7 +259,6 @@ def li_full_intervention(
             probes[layer + 1], mid_act, probe_labels,
             flip_position, flip_to, lr, steps, reg_strength,
         )
-        activation_deltas[layer + 1] = float(torch.norm(new_mid_act - mid_act).item())
         whole_mid_act = whole_mid_act.detach().clone()
         whole_mid_act[0, last_pos] = new_mid_act
 
@@ -270,11 +267,7 @@ def li_full_intervention(
         logits, _ = model.predict(whole_mid_act)
     last_logits = logits[0, last_pos, :].clone()
     last_logits[PAD_ID] = float("-inf")
-    debug = {
-        "activation_deltas": activation_deltas,
-        "last_pos": last_pos,
-    }
-    return torch.softmax(last_logits, dim=-1), debug
+    return torch.softmax(last_logits, dim=-1)
 
 
 # ---------------------------------------------------------------------------
@@ -370,15 +363,11 @@ def analyse_position(
     labels_current = board_to_li(board).to(device)
 
     # Run Li's multi-layer intervention
-    probs_intervened, debug_info = li_full_intervention(
+    probs_intervened = li_full_intervention(
         model, probes, x, len(sequence),
         labels_current, flip_position, li_target,
         layer_start=layer_start, layer_end=layer_end,
     )
-
-    prob_delta = float((probs_intervened - probs_original).abs().sum().item())
-    print(f"    [debug] last_pos={debug_info['last_pos']}  prob_delta={prob_delta:.4f}  "
-          f"act_deltas={[f'{v:.2f}' for v in debug_info['activation_deltas'].values()]}")
 
     intervened_vs_target = topn_errors(probs_intervened, target_legal_set)
     intervened_vs_source = topn_errors(probs_intervened, source_legal_set)
