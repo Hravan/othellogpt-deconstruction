@@ -71,6 +71,7 @@ def extract_representations(
     games: list[list[int]],
     batch_size: int,
     device: torch.device,
+    shuffle_tgt: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     all_games: list[list[int]] = []
     all_steps: list[int] = []
@@ -80,19 +81,35 @@ def extract_representations(
             all_games.append(game)
             all_steps.append(step)
 
+    # For shuffled target: permute each game once, consistently across steps
+    if shuffle_tgt:
+        shuffled_game_cache: dict[int, list[int]] = {}
+        all_shuffled_games: list[list[int]] = []
+        for game_index, game in enumerate(all_games):
+            game_id = id(game)
+            if game_id not in shuffled_game_cache:
+                shuffled = game[:]
+                random.shuffle(shuffled)
+                shuffled_game_cache[game_id] = shuffled
+            all_shuffled_games.append(shuffled_game_cache[game_id])
+    else:
+        all_shuffled_games = all_games
+
     n_total = len(all_steps)
     src_embeddings = np.zeros((n_total, N_EMBD), dtype=np.float32)
     tgt_embeddings = np.zeros((n_total, N_EMBD), dtype=np.float32)
 
     for start in range(0, n_total, batch_size):
         end = min(start + batch_size, n_total)
-        batch_games = all_games[start:end]
+        batch_games         = all_games[start:end]
+        batch_shuffled_games = all_shuffled_games[start:end]
         batch_steps = all_steps[start:end]
 
-        token_ids, seq_lens = build_token_batch(batch_games, batch_steps, device)
+        token_ids,         seq_lens  = build_token_batch(batch_games,         batch_steps, device)
+        token_ids_shuffled, _        = build_token_batch(batch_shuffled_games, batch_steps, device)
 
-        hidden_src = src_model(token_ids)  # (B, BLOCK_SIZE, 512)
-        hidden_tgt = tgt_model(token_ids)  # (B, BLOCK_SIZE, 512)
+        hidden_src = src_model(token_ids)           # (B, BLOCK_SIZE, 512)
+        hidden_tgt = tgt_model(token_ids_shuffled)  # (B, BLOCK_SIZE, 512)
 
         for sample_index, seq_len in enumerate(seq_lens):
             position = seq_len - 1
@@ -131,11 +148,13 @@ def parse_args() -> argparse.Namespace:
         description="Extract MUSE embeddings from two OthelloGPT checkpoints."
     )
     parser.add_argument("--src-ckpt",        default="ckpts/gpt_synthetic.ckpt")
-    parser.add_argument("--tgt-ckpt",        default="ckpts/gpt_championship.ckpt")
+    parser.add_argument("--tgt-ckpt",        default="ckpts/gpt_synthetic.ckpt")
     parser.add_argument("--data-file-index", type=int, default=3)
     parser.add_argument("--n-games",         type=int, default=5000)
     parser.add_argument("--batch-size",      type=int, default=256)
     parser.add_argument("--train-frac",      type=float, default=0.8)
+    parser.add_argument("--shuffle-tgt",     action="store_true",
+                        help="Feed shuffled sequences to the target model (order-sensitivity test)")
     parser.add_argument("--seed",            type=int, default=42)
     parser.add_argument("--output-dir",      default="data/muse_gpt_gpt")
     return parser.parse_args()
@@ -161,9 +180,12 @@ def main() -> None:
     print(f"Loading target model from {args.tgt_ckpt}...")
     tgt_model = load_othello_gpt(args.tgt_ckpt, device)
 
+    if args.shuffle_tgt:
+        print("  Shuffle-tgt mode: target model receives shuffled sequences")
     print("Extracting representations...")
     src_embeddings, tgt_embeddings = extract_representations(
         src_model, tgt_model, games, args.batch_size, device,
+        shuffle_tgt=args.shuffle_tgt,
     )
 
     n_positions = src_embeddings.shape[0]

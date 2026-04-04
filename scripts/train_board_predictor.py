@@ -26,6 +26,7 @@ Usage
 
 import argparse
 import pickle
+import random
 import sys
 from pathlib import Path
 
@@ -153,16 +154,23 @@ class BoardStateDataset(Dataset):
         token_ids  : (BLOCK_SIZE,) padded sequence of move tokens
         board_labels: (T, 64) board state at each move, values in {0, 1, 2}
         seq_len    : number of actual moves T
+
+    If shuffle=True, the move sequence is randomly permuted before replay,
+    destroying all Othello structure while preserving token distribution.
     """
 
-    def __init__(self, games: list[list[int]]):
+    def __init__(self, games: list[list[int]], shuffle: bool = False):
         self.games = games
+        self.shuffle = shuffle
 
     def __len__(self) -> int:
         return len(self.games)
 
     def __getitem__(self, index: int):
         game = self.games[index]
+        if self.shuffle:
+            game = game[:]
+            random.shuffle(game)
         board_states = replay_positions(game)
 
         # Truncate to BLOCK_SIZE (games are 60 moves, BLOCK_SIZE is 59)
@@ -302,6 +310,8 @@ def parse_args() -> argparse.Namespace:
                         help="Fraction of games held out for validation (default: 0.02)")
     parser.add_argument("--n-layers",   type=int,   default=4,
                         help="Number of transformer layers (default: 4)")
+    parser.add_argument("--shuffle",    action="store_true",
+                        help="Shuffle move sequences to destroy Othello structure (baseline)")
     return parser.parse_args()
 
 
@@ -319,8 +329,10 @@ def main() -> None:
     val_games   = all_games[n_train:]
     print(f"  {n_train:,} training games, {n_val:,} validation games")
 
-    train_dataset = BoardStateDataset(train_games)
-    val_dataset   = BoardStateDataset(val_games)
+    if args.shuffle:
+        print("  Shuffle mode: move sequences will be randomly permuted (structure-free baseline)")
+    train_dataset = BoardStateDataset(train_games, shuffle=args.shuffle)
+    val_dataset   = BoardStateDataset(val_games,   shuffle=args.shuffle)
 
     train_loader = DataLoader(
         train_dataset, batch_size=args.batch_size,

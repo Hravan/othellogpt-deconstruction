@@ -223,6 +223,8 @@ def parse_args() -> argparse.Namespace:
                         help="Fraction of positions for MUSE train dict (default: 0.8)")
     parser.add_argument("--n-layers",              type=int, default=4,
                         help="Board predictor layers, must match training (default: 4)")
+    parser.add_argument("--shuffle",               action="store_true",
+                        help="Shuffle game sequences before extraction (must match training)")
     parser.add_argument("--seed",                  type=int, default=42)
     parser.add_argument("--output-dir",            default="data/muse",
                         help="Output directory (default: data/muse)")
@@ -247,6 +249,11 @@ def main() -> None:
         all_games = pickle.load(f)
 
     games = all_games[:args.n_games]
+    if args.shuffle:
+        print("  Shuffle mode: permuting move sequences to destroy Othello structure")
+        for i in range(len(games)):
+            games[i] = games[i][:]
+            random.shuffle(games[i])
     print(f"  Using {len(games)} games")
 
     # Load models
