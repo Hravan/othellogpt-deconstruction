@@ -86,32 +86,72 @@ In Li's intervention, the non-linear probe is used both to **define** B' in acti
 
 | Setup | Baseline illegal rate | Post-intervention | Ratio |
 |---|---|---|---|
-| Synthetic model, synthetic games | 0.2% | 7.5% | 37× |
+| Synthetic model, synthetic games (natural) | 0.3% | 6.8% | 23× |
 | Synthetic model, championship games | 0.8% | 6.7% | 8× |
-| Championship model, championship games | 21.0% | 21.8% (26.5% for m* unique to B') | ~1× |
+| Championship model, championship games (Nanda) | 21.0% | 21.8% (26.5% for m* unique to B') | ~1× |
+| Championship model, championship games (Li) | 21.5% | 21.9% (28.5% for m* unique to B') | ~1× |
+| Synthetic model, **unnatural** benchmark | **0.0%** | **20.4%** (30.9% for m* unique to B') | **∞** |
 
-On the synthetic model, post-intervention play is 8–37× more illegal than baseline. A model that had genuinely internalised B' as its world state would play at least as legally as the baseline. Instead it becomes significantly more erratic — consistent with the intervention being a one-shot disruption, not a persistent state change.
+On the synthetic model with natural positions, post-intervention play is 8–23× more illegal than baseline. On the unnatural benchmark the model plays with 0.0% illegal rate before intervention — and 20.4% after. The ratio is effectively infinite: the intervention takes a model playing perfectly on these board states and makes it play illegally one in five times. The cases where m* is genuinely unique to B' (2.3% of positions) are the worst: 30.9% illegal rate.
+
+A model that had genuinely internalised B' as its world state would play at least as legally as the baseline. Instead it becomes maximally erratic — consistent with the intervention being a one-shot disruption, not a persistent state change.
 
 For the championship model, the intervention has no detectable effect overall. The rare cases where the intervention forces a move genuinely unique to B' (1.7% of positions) show the worst subsequent play (26.5% illegal), the opposite of what a world model would predict.
 
 ### Finding 3: The Intervention Fails on the Championship Model
 
-**Setup.** Li et al. trained two OthelloGPT models — one on 20M synthetic (random) games, one on ~140K championship (strategic) games. Both play Othello. Nanda tested only the synthetic model and never disclosed this choice as a limitation.
+**Setup.** Li et al. trained two OthelloGPT models — one on 20M synthetic (random) games, one on ~140K championship (strategic) games. Both play Othello. Nanda tested only the synthetic model and never disclosed this choice as a limitation. We run Li's own intervention (gradient descent against the non-linear probe, layers 4–8) on the championship model using the championship probe checkpoints.
 
 **Results.**
 
-| Setup | Probe accuracy | Intervention improvement |
-|---|---|---|
-| Synthetic model, synthetic games | 0.974 | 70% |
-| Championship model, championship games | 0.812 | <1% |
+| Setup | Intervention | Probe accuracy | topN baseline vs B | Improvement toward B' | Rollout baseline | Rollout post-intervention |
+|---|---|---|---|---|---|---|
+| Synthetic model, synthetic games | Li (gradient descent) | 0.974 | ~0 | 70–80% | 0.3% | 6.8–20.4% |
+| Championship model, championship games | Nanda (linear probe add) | 0.812 | 5.29 | <1% | 21.0% | 21.8% (26.5% unique) |
+| Championship model, championship games | Li (gradient descent) | 0.812 | 5.29 | 8.4% | 21.5% | 21.9% (28.5% unique) |
 
-The intervention that produces a 70% improvement on the synthetic model produces no signal on the championship model. Two models trained on the same game, with the same intervention applied, give opposite results. This is not what a world model predicts — the rules of Othello do not change based on training distribution.
+The intervention produces 8.4% improvement on the championship model versus 70–80% on the synthetic model. The rollout illegal rate is essentially unchanged (21.5% → 21.9%). Two models trained on the same game, with the same intervention applied, give opposite results.
 
-The lower probe accuracy on the championship model (0.812) is a partial confound for the intervention result. But the low accuracy is itself evidence: if the championship model had a genuine world model of Othello, board state should be just as linearly decodable from its representations. Nanda never tested this, despite the championship model being publicly available.
+**The topN metric is unsuitable for the championship model.** The topN_errors metric is a symmetric difference between the model's top-N predictions and the full legal move set. It penalises both illegal predictions and legal moves the model does not predict. The synthetic model, trained on 20M random games, sees all legal moves with roughly equal frequency and learns a distribution that covers the full legal set — so the topN baseline is near zero. The championship model, trained on strategic games, learns a concentrated distribution over a few good moves and ignores most legal moves that are strategically irrelevant. The high topN baseline (5.29) is therefore largely a metric artefact: the championship model does not predict all legal moves because it was not trained to. Li's metric implicitly assumes a uniform prior over legal moves, which is precisely what random-game training produces and strategic training does not.
+
+The rollout illegal rate is the appropriate metric for the championship model: it measures whether the model's actual top-1 pick is legal, without penalising strategic selectivity. The rollout result is unambiguous — the intervention has no effect.
+
+**Neither Li nor Nanda tested the championship model.** Li trained and published both models but ran all intervention experiments on the synthetic model only, without disclosing this as a limitation. This is not a minor omission: if the intervention proves a general world model of Othello, it should hold for any model trained on Othello, regardless of training distribution. The rules of the game do not change. Choosing to report only the model where the intervention works — while publishing the other model without testing it — is selective reporting. The consistent treatment would be: if you probe the championship model, you also intervene on it.
+
+The lower probe accuracy on the championship model (0.812 vs 0.974) is a partial confound — a weaker probe produces a weaker intervention target. But the low accuracy is itself evidence: a genuine world model of Othello should be linearly decodable from the representations of any model trained on Othello.
 
 ### Finding 4: Memorisation and the Cross-Dataset Test
 
 OthelloGPT was trained on game sequences drawn from the same pool used for probing and intervention. Any probe accuracy on seen sequences is potentially confounded by sequence memorisation. The synthetic model, when evaluated on championship games it has never seen, shows reduced probe accuracy (0.927 vs 0.974). This suggests part of what the probe recovers on synthetic games is memorisation artifacts, not a general board state computation.
+
+---
+
+---
+
+## Yuan et al. (2025): Representation Alignment
+
+Yuan et al. (2025, "Revisiting the Othello World Model Hypothesis") use MUSE representation alignment to show that independently trained Othello-playing models — across different architectures (GPT-2, Bart, Mistral, LLaMA-2) — converge on similar internal representations, with cosine similarity of 80–96% after Procrustes alignment. They also show that adjacent tiles tend to have similar embeddings (Section 5), which they interpret as evidence of learned spatial geometry.
+
+We acknowledge these results. Something structurally similar is being computed across independently trained models. However, what that something is remains unknown. High representation similarity after alignment is consistent with both:
+
+1. All models converge on a shared world model of board state
+2. All models are non-lossy encoders of move sequences, and board state is recoverable from any non-lossy encoding of a structured sequential input — without requiring an explicit internal world state
+
+These cannot be distinguished by alignment scores alone. Similarly, tile embedding proximity reflects co-occurrence statistics (adjacent tiles tend to be simultaneously legal throughout training) as much as any spatial world model. The alignment result is a necessary but not sufficient condition for the world model claim.
+
+---
+
+---
+
+## The Unexplained Learning Mechanism
+
+The world model claim, taken seriously, asserts that OthelloGPT learned — from sequences of integers in range 0–63 — a rich physical theory of Othello: that there are two players, a spatial 8×8 board, discs belonging to each player, and a flip mechanic that changes ownership across turns. No board image, no rules, no domain knowledge was injected into the training data or the model architecture. The model sees only token sequences.
+
+If this is true, it demands an explanation of the learning mechanism. How does a sequence model construct a physical world model from token co-occurrence statistics alone? Nanda, Li, and Yuan do not address this question. They establish that board state is recoverable from representations and that interventions partially redirect behavior — and then conclude that a world model exists. The mechanism by which such a model could arise is left entirely unaccounted for.
+
+The parsimonious alternative requires no such explanation: the model learns a compressed statistical summary of move sequences that happens to be human-interpretable as board state. Board state is a deterministic function of the move sequence; any model that learns the distribution of legal continuations will implicitly encode it as a predictive feature — without representing players, boards, or discs as explicit internal concepts. The probe finds this encoding and the authors interpret it as a world model. But a statistical regularity that is *consistent with* a world model is not the same as a world model.
+
+The burden of proof lies with those making the stronger claim. Showing that board state is decodable, that representations align across models, and that interventions partially work does not discharge that burden — it shows the model has learned something structured from structured input, which is the null hypothesis for any competent sequence model trained on a rule-governed task.
 
 ---
 
@@ -122,7 +162,7 @@ OthelloGPT was trained on game sequences drawn from the same pool used for probi
 | Model reasons from board state | SS = 0.230, CR = 25.6%; path-dependent activations causally increase illegal moves |
 | Intervention proves causal board tracking | 94% legal set overlap explains 65–70% apparent improvement; model drifts only 14–17% from B |
 | World model persists beyond one step | Post-intervention rollout is 8–37× more illegal than baseline on synthetic model |
-| World model is general | Intervention is 70% effective on synthetic model, <1% on championship model — same game, same intervention |
+| World model is general | Intervention is 70–80% effective on synthetic model, 8.4% on championship model (rollout: 21.5% → 21.9%, no effect) — same game, same intervention; Li never tested championship model |
 | Representation reflects the game | Probe accuracy drops cross-dataset (0.974 → 0.927); championship model representations less linearly decodable |
 
 ## Li's Unnatural Board State Experiment
