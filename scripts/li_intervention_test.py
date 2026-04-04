@@ -315,15 +315,59 @@ def rollout(
 # Per-position analysis
 # ---------------------------------------------------------------------------
 
+def choose_flip_position(
+    board:            np.ndarray,
+    source_legal_set: set[int],
+    next_player:      int,
+    strategy:         str,
+    rng:              random.Random,
+) -> int | None:
+    """
+    Choose which occupied cell to flip to construct B'.
+
+    Strategies
+    ----------
+    random       : uniform random among occupied cells (original behaviour)
+    max_new_legal: pick the cell whose flip maximises |legal(B') \\ legal(B)|
+                   (most new legal moves created); skip if no cell creates any
+    """
+    flippable = [pos for pos in range(64) if board[pos] != EMPTY]
+    if not flippable:
+        return None
+
+    if strategy == "random":
+        return rng.choice(flippable)
+
+    # max_new_legal: find the cell that maximises new legal moves
+    best_positions = []
+    best_new_count = 0
+    for candidate_position in flippable:
+        candidate_board = board.copy()
+        candidate_board[candidate_position] = WHITE if board[candidate_position] == BLACK else BLACK
+        candidate_legal_set = set(legal_moves(candidate_board, next_player))
+        new_count = len(candidate_legal_set - source_legal_set)
+        if new_count > best_new_count:
+            best_new_count = new_count
+            best_positions = [candidate_position]
+        elif new_count == best_new_count and new_count > 0:
+            best_positions.append(candidate_position)
+
+    if not best_positions:
+        return None  # no cell creates any new legal moves — skip this position
+
+    return rng.choice(best_positions)
+
+
 def analyse_position(
-    model:       GPTforProbeIA,
-    probes:      dict[int, BatteryProbeClassificationTwoLayer],
-    sequence:    list[str],
-    layer_start: int,
-    layer_end:   int,
-    n_rollout:   int,
-    device:      torch.device,
-    rng:         random.Random,
+    model:         GPTforProbeIA,
+    probes:        dict[int, BatteryProbeClassificationTwoLayer],
+    sequence:      list[str],
+    layer_start:   int,
+    layer_end:     int,
+    n_rollout:     int,
+    device:        torch.device,
+    rng:           random.Random,
+    flip_strategy: str = "random",
 ) -> dict | None:
     try:
         board, next_player = board_replay(sequence)
@@ -334,12 +378,10 @@ def analyse_position(
     if not source_legal_set:
         return None
 
-    # Find a non-empty cell to flip (BLACK↔WHITE only, not EMPTY)
-    flippable = [pos for pos in range(64) if board[pos] != EMPTY]
-    if not flippable:
+    flip_position = choose_flip_position(board, source_legal_set, next_player, flip_strategy, rng)
+    if flip_position is None:
         return None
 
-    flip_position = rng.choice(flippable)
     original_color = int(board[flip_position])  # our encoding: BLACK=1 or WHITE=2
     li_original = (original_color + 1) % 3      # Li encoding: 2=black, 0=white
     li_target   = 2 - li_original               # flip: 2↔0
@@ -499,6 +541,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--intervention-lr", type=float, default=1e-3)
     parser.add_argument("--intervention-reg", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--flip-strategy", default="random", choices=["random", "max_new_legal"],
+                        help="How to choose the cell to flip: random (default) or max_new_legal")
     parser.add_argument("--output", default=None)
     return parser.parse_args()
 
@@ -541,6 +585,7 @@ def main() -> None:
             positions.append(game[:ply])
 
     print(f"  {len(positions)} positions to analyse.")
+    print(f"  Flip strategy: {args.flip_strategy}")
     print(f"  Intervention: {len(layers)} layers × {args.intervention_steps} steps each")
 
     all_results: list[dict] = []
@@ -550,6 +595,7 @@ def main() -> None:
             model, probes, sequence,
             args.layer_start, args.layer_end,
             args.n_rollout, device, rng,
+            flip_strategy=args.flip_strategy,
         )
         if result is not None:
             all_results.append(result)
