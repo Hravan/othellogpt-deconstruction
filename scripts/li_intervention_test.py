@@ -463,6 +463,26 @@ def analyse_position(
         if baseline_results:
             baseline_illegal_rate = 1.0 - float(np.mean(baseline_results))
 
+    # Forced unique-to-B' rollout: pick the highest-ranked unique-to-B' move,
+    # force it as the first move, then roll out from B' normally.
+    forced_unique_rollout_illegal_rate = None
+    if unique_to_target and len(sequence) < BLOCK_SIZE - 1:
+        # Pick the unique-to-B' move ranked highest by the intervened model
+        ranks_after = ranks_of_positions(probs_intervened, unique_to_target)
+        if ranks_after:
+            best_unique_move = min(unique_to_target, key=lambda pos: ranks_of_positions(probs_intervened, {pos})[0] if ranks_of_positions(probs_intervened, {pos}) else 999)
+            try:
+                forced_board  = apply_move(target_board, best_unique_move, next_player)
+                forced_player = 3 - next_player
+                if not legal_moves(forced_board, forced_player):
+                    forced_player = 3 - forced_player
+                forced_seq     = sequence + [pos_to_alg(best_unique_move)]
+                forced_results = rollout(model, forced_seq, forced_board, forced_player, n_rollout, device)
+                if forced_results:
+                    forced_unique_rollout_illegal_rate = 1.0 - float(np.mean(forced_results))
+            except ValueError:
+                pass
+
     return {
         "n_legal_source":            len(source_legal_set),
         "n_legal_target":            len(target_legal_set),
@@ -477,8 +497,9 @@ def analyse_position(
         "m_star_unique_to_target":   m_star_unique_to_target,
         "ranks_before_unique":       ranks_before_unique,
         "ranks_after_unique":        ranks_after_unique,
-        "rollout_illegal_rate":      rollout_illegal_rate,
-        "baseline_illegal_rate":     baseline_illegal_rate,
+        "rollout_illegal_rate":                  rollout_illegal_rate,
+        "baseline_illegal_rate":                 baseline_illegal_rate,
+        "forced_unique_rollout_illegal_rate":     forced_unique_rollout_illegal_rate,
     }
 
 
@@ -547,10 +568,14 @@ def report(all_results: list[dict], layer_start: int, layer_end: int, n_rollout:
     rollout_rate_all  = np.mean([r["rollout_illegal_rate"]  for r in all_with_rollout]) if all_with_rollout else float("nan")
     rollout_rate_uniq = np.mean([r["rollout_illegal_rate"]  for r in unique_with_rollout]) if unique_with_rollout else float("nan")
 
+    forced_entries = [r for r in all_results if r["forced_unique_rollout_illegal_rate"] is not None]
+    forced_rate    = np.mean([r["forced_unique_rollout_illegal_rate"] for r in forced_entries]) if forced_entries else float("nan")
+
     print(f"\n  m* unique to B′: {len(unique_to_target)}/{n} positions ({100*frac_unique:.1f}%)")
-    print(f"\n  {'Baseline illegal rate (no intervention)':.<45} {100*baseline_rate:.1f}%  (n={len(baseline_entries)})")
-    print(f"  {'Rollout illegal rate (m* legal for B′)':.<45} {100*rollout_rate_all:.1f}%  (n={len(all_with_rollout)})")
-    print(f"  {'Rollout illegal rate (m* unique to B′ only)':.<45} {100*rollout_rate_uniq:.1f}%  (n={len(unique_with_rollout)})")
+    print(f"\n  {'Baseline illegal rate (no intervention)':.<50} {100*baseline_rate:.1f}%  (n={len(baseline_entries)})")
+    print(f"  {'Rollout illegal rate (m* legal for B′)':.<50} {100*rollout_rate_all:.1f}%  (n={len(all_with_rollout)})")
+    print(f"  {'Rollout illegal rate (m* unique to B′ only)':.<50} {100*rollout_rate_uniq:.1f}%  (n={len(unique_with_rollout)})")
+    print(f"  {'Forced unique-to-B′ move rollout illegal rate':.<50} {100*forced_rate:.1f}%  (n={len(forced_entries)})")
     print()
 
 
