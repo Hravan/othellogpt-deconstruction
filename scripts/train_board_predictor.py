@@ -88,31 +88,31 @@ class BoardStatePredictor(nn.Module):
 
     N_EMBD  = 512
     N_HEAD  = 8
-    N_LAYER = 2
     DROPOUT = 0.1
 
-    def __init__(self):
+    def __init__(self, n_layer: int = 4):
         super().__init__()
+        self.n_layer = n_layer
         config = GPTConfig(
             vocab_size=VOCAB_SIZE,
             block_size=BLOCK_SIZE,
-            n_layer=self.N_LAYER,
+            n_layer=n_layer,
             n_head=self.N_HEAD,
             n_embd=self.N_EMBD,
             embd_pdrop=self.DROPOUT,
             resid_pdrop=self.DROPOUT,
             attn_pdrop=self.DROPOUT,
         )
-        self.tok_emb   = nn.Embedding(VOCAB_SIZE, self.N_EMBD)
-        self.pos_emb   = nn.Parameter(torch.zeros(1, BLOCK_SIZE, self.N_EMBD))
-        self.drop      = nn.Dropout(self.DROPOUT)
-        self.blocks    = nn.ModuleList([Block(config) for _ in range(self.N_LAYER)])
-        self.ln_f      = nn.LayerNorm(self.N_EMBD)
+        self.tok_emb    = nn.Embedding(VOCAB_SIZE, self.N_EMBD)
+        self.pos_emb    = nn.Parameter(torch.zeros(1, BLOCK_SIZE, self.N_EMBD))
+        self.drop       = nn.Dropout(self.DROPOUT)
+        self.blocks     = nn.ModuleList([Block(config) for _ in range(n_layer)])
+        self.ln_f       = nn.LayerNorm(self.N_EMBD)
         self.board_head = nn.Linear(self.N_EMBD, 64 * 3)
 
         self.apply(self._init_weights)
         n_params = sum(p.numel() for p in self.parameters())
-        print(f"BoardStatePredictor: {n_params:,} parameters ({n_params / 1e6:.1f}M)")
+        print(f"BoardStatePredictor ({n_layer} layers): {n_params:,} parameters ({n_params/1e6:.1f}M)")
 
     def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -300,6 +300,8 @@ def parse_args() -> argparse.Namespace:
                         help="Learning rate (default: 3e-4)")
     parser.add_argument("--val-frac",   type=float, default=0.02,
                         help="Fraction of games held out for validation (default: 0.02)")
+    parser.add_argument("--n-layers",   type=int,   default=4,
+                        help="Number of transformer layers (default: 4)")
     return parser.parse_args()
 
 
@@ -329,7 +331,7 @@ def main() -> None:
         shuffle=False, num_workers=4, collate_fn=collate,
     )
 
-    model     = BoardStatePredictor().to(device)
+    model     = BoardStatePredictor(n_layer=args.n_layers).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.1)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 

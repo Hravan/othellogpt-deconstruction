@@ -62,9 +62,9 @@ def load_othello_gpt(checkpoint_path: str, device: torch.device) -> GPTforProbin
     return model.to(device).eval()
 
 
-def load_board_predictor(checkpoint_path: str, device: torch.device) -> BoardStatePredictor:
-    model = BoardStatePredictor()
-    state_dict = torch.load(checkpoint_path, map_location=device)
+def load_board_predictor(checkpoint_path: str, device: torch.device, n_layer: int = 4) -> BoardStatePredictor:
+    model = BoardStatePredictor(n_layer=n_layer)
+    state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
     model.load_state_dict(state_dict)
     return model.to(device).eval()
 
@@ -221,6 +221,8 @@ def parse_args() -> argparse.Namespace:
                         help="Inference batch size (default: 256)")
     parser.add_argument("--train-frac",            type=float, default=0.8,
                         help="Fraction of positions for MUSE train dict (default: 0.8)")
+    parser.add_argument("--n-layers",              type=int, default=4,
+                        help="Board predictor layers, must match training (default: 4)")
     parser.add_argument("--seed",                  type=int, default=42)
     parser.add_argument("--output-dir",            default="data/muse",
                         help="Output directory (default: data/muse)")
@@ -252,7 +254,7 @@ def main() -> None:
     othello_gpt = load_othello_gpt(args.othello_gpt_ckpt, device)
 
     print("Loading board predictor...")
-    board_predictor = load_board_predictor(args.board_predictor_ckpt, device)
+    board_predictor = load_board_predictor(args.board_predictor_ckpt, device, n_layer=args.n_layers)
 
     # Extract representations
     print("Extracting representations...")
