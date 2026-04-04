@@ -151,6 +151,23 @@ def top1_position(probs: torch.Tensor) -> int:
     return -1
 
 
+def ranks_of_positions(probs: torch.Tensor, positions: set[int]) -> list[int]:
+    """
+    Return the 1-based rank of each board position in `positions` within the
+    probability distribution. Rank 1 = highest probability token.
+    Positions not in the vocab are ignored.
+    """
+    sorted_tokens = probs.argsort(descending=True).tolist()
+    rank_map: dict[int, int] = {}
+    rank = 1
+    for token in sorted_tokens:
+        if token in itos:
+            board_pos = int(itos[token])
+            rank_map[board_pos] = rank
+            rank += 1
+    return [rank_map[pos] for pos in positions if pos in rank_map]
+
+
 # ---------------------------------------------------------------------------
 # Li's gradient descent intervention
 # ---------------------------------------------------------------------------
@@ -414,6 +431,11 @@ def analyse_position(
     intervened_vs_target = topn_errors(probs_intervened, target_legal_set)
     intervened_vs_source = topn_errors(probs_intervened, source_legal_set)
 
+    # Rank of unique-to-B' moves before and after intervention
+    unique_to_target = target_legal_set - source_legal_set
+    ranks_before_unique = ranks_of_positions(probs_original,   unique_to_target)
+    ranks_after_unique  = ranks_of_positions(probs_intervened, unique_to_target)
+
     # Rollout persistence
     m_star = top1_position(probs_intervened)
     m_star_legal_source     = m_star in source_legal_set
@@ -442,18 +464,21 @@ def analyse_position(
             baseline_illegal_rate = 1.0 - float(np.mean(baseline_results))
 
     return {
-        "n_legal_source":          len(source_legal_set),
-        "n_legal_target":          len(target_legal_set),
-        "legal_overlap":           legal_overlap,
-        "original_vs_source":      original_vs_source,
-        "original_vs_target":      original_vs_target,
-        "intervened_vs_target":    intervened_vs_target,
-        "intervened_vs_source":    intervened_vs_source,
-        "m_star_legal_source":     m_star_legal_source,
-        "m_star_legal_target":     m_star_legal_target,
-        "m_star_unique_to_target": m_star_unique_to_target,
-        "rollout_illegal_rate":    rollout_illegal_rate,
-        "baseline_illegal_rate":   baseline_illegal_rate,
+        "n_legal_source":            len(source_legal_set),
+        "n_legal_target":            len(target_legal_set),
+        "n_unique_to_target":        len(unique_to_target),
+        "legal_overlap":             legal_overlap,
+        "original_vs_source":        original_vs_source,
+        "original_vs_target":        original_vs_target,
+        "intervened_vs_target":      intervened_vs_target,
+        "intervened_vs_source":      intervened_vs_source,
+        "m_star_legal_source":       m_star_legal_source,
+        "m_star_legal_target":       m_star_legal_target,
+        "m_star_unique_to_target":   m_star_unique_to_target,
+        "ranks_before_unique":       ranks_before_unique,
+        "ranks_after_unique":        ranks_after_unique,
+        "rollout_illegal_rate":      rollout_illegal_rate,
+        "baseline_illegal_rate":     baseline_illegal_rate,
     }
 
 
@@ -492,6 +517,21 @@ def report(all_results: list[dict], layer_start: int, layer_end: int, n_rollout:
           f"= {100*improvement/max_improvement:.1f}% of maximum")
     print(f"  Model drift away from B:           {drift:.3f} / {max_improvement:.3f} "
           f"= {100*drift/max_improvement:.1f}% of maximum")
+
+    # Rank of unique-to-B' moves before and after intervention
+    all_ranks_before = [rank for r in all_results for rank in r["ranks_before_unique"]]
+    all_ranks_after  = [rank for r in all_results for rank in r["ranks_after_unique"]]
+    has_unique = [r for r in all_results if r["n_unique_to_target"] > 0]
+
+    print("\n" + "=" * 80)
+    print("Rank of unique-to-B' moves in model output")
+    print("=" * 80)
+    print(f"\n  Positions with at least one unique-to-B' move: {len(has_unique)}/{n}")
+    if all_ranks_before:
+        print(f"  mean rank before intervention: {np.mean(all_ranks_before):.1f}  (median {np.median(all_ranks_before):.0f})")
+        print(f"  mean rank after  intervention: {np.mean(all_ranks_after):.1f}  (median {np.median(all_ranks_after):.0f})")
+        rank_improvement = np.mean(all_ranks_before) - np.mean(all_ranks_after)
+        print(f"  mean rank improvement (before − after): {rank_improvement:.1f}  (positive = moved up)")
 
     print("\n" + "=" * 80)
     print(f"Rollout persistence  ({n_rollout} steps)")
