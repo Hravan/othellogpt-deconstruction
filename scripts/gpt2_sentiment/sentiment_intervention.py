@@ -45,6 +45,22 @@ N_LAYERS = 12
 SENTIMENT_NEGATIVE = 0
 SENTIMENT_POSITIVE = 1
 
+# Template prompts where the natural completion is a sentiment-laden whole word.
+# Each entry: (prompt, negative_completions, positive_completions)
+# Completions include the leading space as GPT-2 tokenizes " great" ≠ "great".
+TEMPLATE_PROMPTS: list[tuple[str, list[str], list[str]]] = [
+    ("The movie was absolutely",   [" terrible", " awful", " horrible"],        [" wonderful", " amazing", " brilliant"]),
+    ("This film is",               [" boring", " dreadful", " awful"],           [" brilliant", " wonderful", " great"]),
+    ("The acting was",             [" terrible", " awful", " horrible"],         [" brilliant", " excellent", " outstanding"]),
+    ("I found this film",          [" boring", " dull", " disappointing"],       [" captivating", " wonderful", " brilliant"]),
+    ("Overall the movie was",      [" disappointing", " terrible", " awful"],    [" excellent", " wonderful", " brilliant"]),
+    ("The story was",              [" boring", " dreadful", " terrible"],        [" captivating", " wonderful", " brilliant"]),
+    ("This movie was a",           [" disaster", " waste", " mess"],             [" masterpiece", " triumph", " gem"]),
+    ("The film left me feeling",   [" bored", " depressed", " empty"],           [" inspired", " uplifted", " moved"]),
+    ("The direction was",          [" terrible", " awful", " poor"],             [" brilliant", " masterful", " stunning"]),
+    ("I would describe this as",   [" boring", " terrible", " awful"],           [" brilliant", " wonderful", " amazing"]),
+]
+
 
 # ---------------------------------------------------------------------------
 # GPT-2 wrapper with intervention interface
@@ -496,6 +512,90 @@ def run_layer_set(
 
 
 # ---------------------------------------------------------------------------
+# Template prompt experiment
+# ---------------------------------------------------------------------------
+
+def run_template_prompts(
+    hf_model,
+    model: GPT2forIntervention,
+    probes: dict[int, BatteryProbeClassificationTwoLayer],
+    tokenizer,
+    layer_start: int,
+    layer_end: int,
+    lr: float,
+    steps: int,
+    reg_strength: float,
+    device: torch.device,
+) -> None:
+    """
+    Run intervention on handcrafted template prompts where the expected next
+    token is a known sentiment word. Reports rank of negative/positive completions
+    before and after intervention, and whether the top-1 token flips.
+    """
+    print(f"\n{'=' * 70}")
+    print(f"TEMPLATE PROMPT RESULTS  (layers {layer_start}–{layer_end - 1})")
+    print(f"{'=' * 70}")
+    print(f"{'Prompt':<42} {'Rank− bef':>9} {'Rank− aft':>9} {'Rank+ bef':>9} {'Rank+ aft':>9} {'Flip':>5}")
+    print(f"{'-'*42} {'-'*9} {'-'*9} {'-'*9} {'-'*9} {'-'*5}")
+
+    for prompt, negative_words, positive_words in TEMPLATE_PROMPTS:
+        encoding = tokenizer(prompt, return_tensors="pt")
+        input_ids = encoding["input_ids"].to(device)
+        seq_length = input_ids.shape[1]
+
+        # Resolve token IDs for the completion words (take first token of each)
+        negative_ids = {tokenizer.encode(word)[0] for word in negative_words}
+        positive_ids = {tokenizer.encode(word)[0] for word in positive_words}
+
+        labels_current = torch.tensor([SENTIMENT_NEGATIVE], dtype=torch.long, device=device)
+
+        probs_before = get_probs_original(hf_model, input_ids, seq_length)
+        probs_after, conf_before, conf_after = gpt2_full_intervention(
+            model=model,
+            probes=probes,
+            input_ids=input_ids,
+            seq_length=seq_length,
+            labels_current=labels_current,
+            flip_position=0,
+            flip_to=SENTIMENT_POSITIVE,
+            layer_start=layer_start,
+            layer_end=layer_end,
+            lr=lr,
+            steps=steps,
+            reg_strength=reg_strength,
+        )
+
+        rank_neg_before = mean_rank_of_tokens(probs_before, negative_ids)
+        rank_neg_after  = mean_rank_of_tokens(probs_after,  negative_ids)
+        rank_pos_before = mean_rank_of_tokens(probs_before, positive_ids)
+        rank_pos_after  = mean_rank_of_tokens(probs_after,  positive_ids)
+
+        # Did the top-1 token flip from negative to positive sentiment?
+        top1_before = int(probs_before.argmax())
+        top1_after  = int(probs_after.argmax())
+        flipped = (top1_before in negative_ids and top1_after in positive_ids)
+        flip_str = "YES" if flipped else "-"
+
+        label = prompt[:40]
+        print(
+            f"{label:<42} "
+            f"{rank_neg_before:>9.0f} {rank_neg_after:>9.0f} "
+            f"{rank_pos_before:>9.0f} {rank_pos_after:>9.0f} "
+            f"{flip_str:>5}"
+        )
+
+        # Show what actually happened to the top-1 token
+        top1_before_str = repr(tokenizer.decode([top1_before]))
+        top1_after_str  = repr(tokenizer.decode([top1_after]))
+        print(f"  {'top-1: ' + top1_before_str + ' → ' + top1_after_str:<60}  P(pos): {conf_before:.3f} → {conf_after:.3f}")
+
+    print(f"\nRank− = mean rank of negative completion words (lower = more probable).")
+    print(f"Rank+ = mean rank of positive completion words (lower = more probable).")
+    print(f"Good result: Rank− rises (↓ probability), Rank+ falls (↑ probability).")
+    print(f"{'=' * 70}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -522,6 +622,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reg-strength", type=float, default=0.2)
     parser.add_argument("--n-rollout",    type=int,   default=5,
                         help="Rollout steps for persistence measurement (default: 5)")
+    parser.add_argument("--use-templates", action="store_true",
+                        help="Also run template-prompt experiment with known sentiment completions")
     parser.add_argument("--seed",         type=int,   default=42)
     return parser.parse_args()
 
@@ -620,11 +722,27 @@ def main() -> None:
             reg_strength=args.reg_strength,
             n_rollout=args.n_rollout,
             device=device,
-            show_diagnostic=(set_index == 0),  # only for first layer set
+            show_diagnostic=True,
         )
         all_results.append(result)
 
     print_results(all_results, args.n_rollout)
+
+    if args.use_templates:
+        # Use the first layer set for the template experiment
+        first_start, first_end = layer_sets[0]
+        run_template_prompts(
+            hf_model=hf_model,
+            model=model,
+            probes=probes,
+            tokenizer=tokenizer,
+            layer_start=first_start,
+            layer_end=first_end,
+            lr=args.lr,
+            steps=args.steps,
+            reg_strength=args.reg_strength,
+            device=device,
+        )
 
 
 if __name__ == "__main__":
