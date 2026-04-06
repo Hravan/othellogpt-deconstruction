@@ -515,83 +515,104 @@ def run_layer_set(
 # Template prompt experiment
 # ---------------------------------------------------------------------------
 
-def run_template_prompts(
+def run_sst2_stem_prompts(
     hf_model,
     model: GPT2forIntervention,
     probes: dict[int, BatteryProbeClassificationTwoLayer],
     tokenizer,
+    negative_examples: list[str],
+    positive_token_ids: set[int],
     layer_start: int,
     layer_end: int,
     lr: float,
     steps: int,
     reg_strength: float,
     device: torch.device,
+    max_prompts: int = 20,
+    neg_threshold: float = 0.4,
 ) -> None:
     """
-    Run intervention on handcrafted template prompts where the expected next
-    token is a known sentiment word. Reports rank of negative/positive completions
-    before and after intervention, and whether the top-1 token flips.
+    Build prompts from negative SST-2 sentences by stripping the last word.
+
+    Only uses sentences where the probe classifies the stem as negative
+    (P(pos) < neg_threshold). The last word of the sentence is the expected
+    negative completion — we measure whether it becomes less probable after
+    intervention, and whether VADER-positive tokens become more probable.
     """
     print(f"\n{'=' * 70}")
-    print(f"TEMPLATE PROMPT RESULTS  (layers {layer_start}–{layer_end - 1})")
+    print(f"SST-2 STEM PROMPTS  (layers {layer_start}–{layer_end - 1}, P(pos) threshold < {neg_threshold})")
     print(f"{'=' * 70}")
-    print(f"{'Prompt':<42} {'Rank− bef':>9} {'Rank− aft':>9} {'Rank+ bef':>9} {'Rank+ aft':>9} {'Flip':>5}")
-    print(f"{'-'*42} {'-'*9} {'-'*9} {'-'*9} {'-'*9} {'-'*5}")
+    print(f"{'Stem':<34} {'Last word':<14} {'P+bef':>5} {'Rk−bef':>7} {'Rk−aft':>7} {'Rk+bef':>7} {'Rk+aft':>7}")
+    print(f"{'-'*34} {'-'*14} {'-'*5} {'-'*7} {'-'*7} {'-'*7} {'-'*7}")
 
-    for prompt, negative_words, positive_words in TEMPLATE_PROMPTS:
-        encoding = tokenizer(prompt, return_tensors="pt")
+    rank_neg_before_list: list[float] = []
+    rank_neg_after_list:  list[float] = []
+    rank_pos_before_list: list[float] = []
+    rank_pos_after_list:  list[float] = []
+    prompts_run = 0
+
+    for sentence in negative_examples:
+        if prompts_run >= max_prompts:
+            break
+
+        words = sentence.rstrip().split()
+        if len(words) < 3:
+            continue
+
+        stem = " ".join(words[:-1])
+        last_word_str = " " + words[-1]  # leading space: GPT-2 tokenizes " great" ≠ "great"
+
+        encoding = tokenizer(stem, return_tensors="pt")
         input_ids = encoding["input_ids"].to(device)
         seq_length = input_ids.shape[1]
 
-        # Resolve token IDs for the completion words (take first token of each)
-        negative_ids = {tokenizer.encode(word)[0] for word in negative_words}
-        positive_ids = {tokenizer.encode(word)[0] for word in positive_words}
+        # Check probe confidence on stem — skip if not negative enough
+        with torch.no_grad():
+            hidden = model.forward_1st_stage(input_ids, layer_start)
+        conf_before = probe_confidence(probes[layer_start], hidden[0, seq_length - 1], SENTIMENT_POSITIVE)
+        if conf_before >= neg_threshold:
+            continue
+
+        last_word_ids = {tokenizer.encode(last_word_str)[0]}
 
         labels_current = torch.tensor([SENTIMENT_NEGATIVE], dtype=torch.long, device=device)
-
         probs_before = get_probs_original(hf_model, input_ids, seq_length)
-        probs_after, conf_before, conf_after = gpt2_full_intervention(
-            model=model,
-            probes=probes,
-            input_ids=input_ids,
-            seq_length=seq_length,
-            labels_current=labels_current,
-            flip_position=0,
-            flip_to=SENTIMENT_POSITIVE,
-            layer_start=layer_start,
-            layer_end=layer_end,
-            lr=lr,
-            steps=steps,
-            reg_strength=reg_strength,
+        probs_after, _, conf_after = gpt2_full_intervention(
+            model=model, probes=probes, input_ids=input_ids, seq_length=seq_length,
+            labels_current=labels_current, flip_position=0, flip_to=SENTIMENT_POSITIVE,
+            layer_start=layer_start, layer_end=layer_end,
+            lr=lr, steps=steps, reg_strength=reg_strength,
         )
 
-        rank_neg_before = mean_rank_of_tokens(probs_before, negative_ids)
-        rank_neg_after  = mean_rank_of_tokens(probs_after,  negative_ids)
-        rank_pos_before = mean_rank_of_tokens(probs_before, positive_ids)
-        rank_pos_after  = mean_rank_of_tokens(probs_after,  positive_ids)
+        rank_neg_before = mean_rank_of_tokens(probs_before, last_word_ids)
+        rank_neg_after  = mean_rank_of_tokens(probs_after,  last_word_ids)
+        rank_pos_before = mean_rank_of_tokens(probs_before, positive_token_ids)
+        rank_pos_after  = mean_rank_of_tokens(probs_after,  positive_token_ids)
 
-        # Did the top-1 token flip from negative to positive sentiment?
-        top1_before = int(probs_before.argmax())
-        top1_after  = int(probs_after.argmax())
-        flipped = (top1_before in negative_ids and top1_after in positive_ids)
-        flip_str = "YES" if flipped else "-"
+        rank_neg_before_list.append(rank_neg_before)
+        rank_neg_after_list.append(rank_neg_after)
+        rank_pos_before_list.append(rank_pos_before)
+        rank_pos_after_list.append(rank_pos_after)
+        prompts_run += 1
 
-        label = prompt[:40]
         print(
-            f"{label:<42} "
-            f"{rank_neg_before:>9.0f} {rank_neg_after:>9.0f} "
-            f"{rank_pos_before:>9.0f} {rank_pos_after:>9.0f} "
-            f"{flip_str:>5}"
+            f"{stem[:34]:<34} {words[-1][:14]:<14} {conf_before:.3f} "
+            f"{rank_neg_before:>7.0f} {rank_neg_after:>7.0f} "
+            f"{rank_pos_before:>7.0f} {rank_pos_after:>7.0f}"
         )
 
-        # Show what actually happened to the top-1 token
-        top1_before_str = repr(tokenizer.decode([top1_before]))
-        top1_after_str  = repr(tokenizer.decode([top1_after]))
-        print(f"  {'top-1: ' + top1_before_str + ' → ' + top1_after_str:<60}  P(pos): {conf_before:.3f} → {conf_after:.3f}")
+    if not rank_neg_before_list:
+        print(f"  No prompts passed the P(pos) < {neg_threshold} filter. Try a higher threshold.")
+        return
 
-    print(f"\nRank− = mean rank of negative completion words (lower = more probable).")
-    print(f"Rank+ = mean rank of positive completion words (lower = more probable).")
-    print(f"Good result: Rank− rises (↓ probability), Rank+ falls (↑ probability).")
+    print(
+        f"\n{'MEAN':<55}"
+        f"{np.mean(rank_neg_before_list):>7.0f} {np.mean(rank_neg_after_list):>7.0f} "
+        f"{np.mean(rank_pos_before_list):>7.0f} {np.mean(rank_pos_after_list):>7.0f}"
+    )
+    print(f"\nRk− = rank of last word of original sentence (the negative completion).")
+    print(f"Rk+ = mean rank of all VADER-positive tokens in vocabulary.")
+    print(f"Good result: Rk− rises (last word less probable), Rk+ falls (positive tokens more probable).")
     print(f"{'=' * 70}")
 
 
@@ -729,13 +750,14 @@ def main() -> None:
     print_results(all_results, args.n_rollout)
 
     if args.use_templates:
-        # Use the first layer set for the template experiment
         first_start, first_end = layer_sets[0]
-        run_template_prompts(
+        run_sst2_stem_prompts(
             hf_model=hf_model,
             model=model,
             probes=probes,
             tokenizer=tokenizer,
+            negative_examples=negative_examples,
+            positive_token_ids=positive_token_ids,
             layer_start=first_start,
             layer_end=first_end,
             lr=args.lr,
