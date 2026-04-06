@@ -734,12 +734,13 @@ def main() -> None:
 
     print("Loading SST-2...")
     dataset = load_dataset("glue", "sst2")
-    negative_examples = [
+    all_negative_examples = [
         example["sentence"]
         for example in dataset["validation"]
         if example["label"] == SENTIMENT_NEGATIVE
-    ][: args.n_examples]
-    print(f"  {len(negative_examples)} negative examples\n")
+    ]
+    negative_examples = all_negative_examples[: args.n_examples]
+    print(f"  {len(negative_examples)} negative examples (intervention), {len(all_negative_examples)} total\n")
 
     all_results = []
     for set_index, (layer_start, layer_end) in enumerate(layer_sets):
@@ -772,7 +773,7 @@ def main() -> None:
             model=model,
             probes=probes,
             tokenizer=tokenizer,
-            negative_examples=negative_examples,
+            negative_examples=all_negative_examples,
             positive_token_ids=positive_token_ids,
             layer_start=first_start,
             layer_end=first_end,
