@@ -167,6 +167,18 @@ def gpt2_intervene(
 # Full multi-layer intervention
 # ---------------------------------------------------------------------------
 
+def probe_confidence(
+    probe: BatteryProbeClassificationTwoLayer,
+    activation: torch.Tensor,
+    target_class: int,
+) -> float:
+    """Return the probe's softmax probability for target_class given activation."""
+    with torch.no_grad():
+        logits = probe(activation[None, :])[0][0]  # (num_task, probe_class)
+        prob = torch.softmax(logits[0], dim=-1)[target_class].item()
+    return float(prob)
+
+
 def gpt2_full_intervention(
     model: GPT2forIntervention,
     probes: dict[int, BatteryProbeClassificationTwoLayer],
@@ -180,12 +192,18 @@ def gpt2_full_intervention(
     lr: float = 1e-3,
     steps: int = 1000,
     reg_strength: float = 0.2,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, float, float]:
     """
     Replicate Li's multi-layer gradient descent intervention for GPT-2.
 
     Intervenes at layer_start, propagates through each subsequent layer,
-    re-intervening at each one. Returns final softmax probabilities (vocab_size,).
+    re-intervening at each one.
+
+    Returns
+    -------
+    probs_after       : softmax probabilities (vocab_size,)
+    conf_before       : probe P(positive) at layer_start before intervention
+    conf_after        : probe P(positive) at layer_start after intervention
     """
     last_pos = seq_length - 1
 
@@ -194,10 +212,12 @@ def gpt2_full_intervention(
 
     # First intervention (before block layer_start)
     mid_act = whole_mid_act[0, last_pos]
+    conf_before = probe_confidence(probes[layer_start], mid_act, flip_to)
     new_mid_act = gpt2_intervene(
         probes[layer_start], mid_act, labels_current,
         flip_position, flip_to, lr, steps, reg_strength,
     )
+    conf_after = probe_confidence(probes[layer_start], new_mid_act, flip_to)
     whole_mid_act = whole_mid_act.detach().clone()
     whole_mid_act[0, last_pos] = new_mid_act
 
@@ -218,7 +238,7 @@ def gpt2_full_intervention(
         logits, _ = model.predict(whole_mid_act)  # (1, T, vocab_size)
 
     last_logits = logits[0, last_pos, :].clone()
-    return torch.softmax(last_logits, dim=-1)
+    return torch.softmax(last_logits, dim=-1), conf_before, conf_after
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +424,8 @@ def run_layer_set(
     rank_negative_after_list: list[float] = []
     tv_distance_list: list[float] = []
     tv_persistence_steps: list[list[float]] = []
+    probe_conf_before_list: list[float] = []
+    probe_conf_after_list: list[float] = []
 
     diagnostic_shown = False
 
@@ -421,7 +443,7 @@ def run_layer_set(
 
         probs_before = get_probs_original(hf_model, input_ids, seq_length)
 
-        probs_after = gpt2_full_intervention(
+        probs_after, conf_before, conf_after = gpt2_full_intervention(
             model=model,
             probes=probes,
             input_ids=input_ids,
@@ -436,6 +458,8 @@ def run_layer_set(
             reg_strength=reg_strength,
         )
 
+        probe_conf_before_list.append(conf_before)
+        probe_conf_after_list.append(conf_after)
         rank_positive_before_list.append(mean_rank_of_tokens(probs_before, positive_token_ids))
         rank_positive_after_list.append(mean_rank_of_tokens(probs_after,  positive_token_ids))
         rank_negative_before_list.append(mean_rank_of_tokens(probs_before, negative_token_ids))
@@ -464,8 +488,10 @@ def run_layer_set(
         "rank_pos_after":  float(np.mean(rank_positive_after_list)),
         "rank_neg_before": float(np.mean(rank_negative_before_list)),
         "rank_neg_after":  float(np.mean(rank_negative_after_list)),
-        "mean_tv":         float(np.mean(tv_distance_list)),
-        "tv_persistence":  tv_persistence_steps,
+        "mean_tv":          float(np.mean(tv_distance_list)),
+        "tv_persistence":   tv_persistence_steps,
+        "probe_conf_before": float(np.mean(probe_conf_before_list)),
+        "probe_conf_after":  float(np.mean(probe_conf_after_list)),
     }
 
 
@@ -504,25 +530,14 @@ def print_results(results: list[dict], n_rollout: int) -> None:
     print("\n" + "=" * 70)
     print("RESULTS SUMMARY")
     print("=" * 70)
-    print(f"{'Layers':<10} {'Rank+Δ':>10} {'Rank−Δ':>10} {'TV':>8}  {'Verdict'}")
-    print(f"{'-'*10} {'-'*10} {'-'*10} {'-'*8}  {'-'*20}")
+    print(f"{'Layers':<10} {'P(pos) before':>14} {'P(pos) after':>13} {'P(pos) Δ':>9} {'TV':>8}")
+    print(f"{'-'*10} {'-'*14} {'-'*13} {'-'*9} {'-'*8}")
     for result in results:
         layer_str = f"{result['layer_start']}–{result['layer_end'] - 1}"
-        rank_pos_delta = result["rank_pos_after"] - result["rank_pos_before"]
-        rank_neg_delta = result["rank_neg_after"] - result["rank_neg_before"]
+        conf_b = result["probe_conf_before"]
+        conf_a = result["probe_conf_after"]
         tv = result["mean_tv"]
-        # Positive tokens should move UP (rank goes DOWN = negative delta)
-        # Negative tokens should move DOWN (rank goes UP = positive delta)
-        verdict = ""
-        if rank_pos_delta < 0:
-            verdict += "POS↑ "
-        else:
-            verdict += "POS↓ "
-        if rank_neg_delta > 0:
-            verdict += "NEG↓"
-        else:
-            verdict += "NEG↑"
-        print(f"{layer_str:<10} {rank_pos_delta:>+10.0f} {rank_neg_delta:>+10.0f} {tv:>8.4f}  {verdict}")
+        print(f"{layer_str:<10} {conf_b:>14.4f} {conf_a:>13.4f} {conf_a - conf_b:>+9.4f} {tv:>8.4f}")
 
     print()
     for result in results:
@@ -540,11 +555,10 @@ def print_results(results: list[dict], n_rollout: int) -> None:
         print(f"  Layers {layer_str} persistence: " + "  ".join(f"t+{i+1}={v:.3f}" for i, v in enumerate(step_means)))
 
     print()
-    print("Rank columns show mean rank change of POSITIVE (+) and NEGATIVE (−) tokens.")
-    print("POS↑ = positive tokens moved to higher probability (good).")
-    print("NEG↓ = negative tokens moved to lower probability (good).")
-    print("Persistence: TV distance between greedy rollouts at each step after intervention.")
-    print("Rising TV = paths diverged due to different token choices (not persistent state).")
+    print("P(pos) = probe's P(positive) at layer_start. Should rise toward 1.0 after intervention.")
+    print("TV = total variation distance between pre/post output distributions.")
+    print("Persistence: TV between greedy rollouts at each step after intervention.")
+    print("Rising TV = token choices diverged (not persistent hidden-state effect).")
     print("=" * 70)
 
 
