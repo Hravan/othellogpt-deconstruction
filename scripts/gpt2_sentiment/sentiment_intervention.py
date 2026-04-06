@@ -11,11 +11,12 @@ shifts toward positive-sentiment tokens.
 
 Usage
 -----
-    # quick test
+    # quick test, single layer set
     uv run python scripts/gpt2_sentiment/sentiment_intervention.py --n-examples 20
 
-    # full run
-    uv run python scripts/gpt2_sentiment/sentiment_intervention.py --n-examples 500
+    # multiple layer sets compared in one run
+    uv run python scripts/gpt2_sentiment/sentiment_intervention.py \\
+        --n-examples 100 --layer-sets 6,10 7,11 8,12 8,10 9,11
 
 Extra dependencies (install once):
     pip install transformers datasets vaderSentiment
@@ -54,27 +55,29 @@ class GPT2forIntervention:
     Thin wrapper around HuggingFace GPT2LMHeadModel providing the
     forward_1st_stage / forward_2nd_stage / predict interface used by the
     gradient descent intervention loop.
+
+    probe_layer is NOT stored on the class — it is passed per-call so the
+    same model instance can be reused across different layer sets.
     """
 
-    def __init__(self, hf_model, probe_layer: int):
+    def __init__(self, hf_model):
         self.model = hf_model
-        self.probe_layer = probe_layer
         self.transformer = hf_model.transformer
         self.lm_head = hf_model.lm_head
 
     @torch.no_grad()
-    def forward_1st_stage(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def forward_1st_stage(self, input_ids: torch.Tensor, layer_start: int) -> torch.Tensor:
         """
-        Run token + position embedding, then transformer blocks 0..probe_layer-1.
+        Run token + position embedding, then transformer blocks 0..layer_start-1.
 
-        Returns hidden state (1, T, INPUT_DIM) at the input of block probe_layer.
+        Returns hidden state (1, T, INPUT_DIM) at the input of block layer_start.
         """
         seq_len = input_ids.shape[1]
         position_ids = torch.arange(seq_len, device=input_ids.device).unsqueeze(0)
         hidden = self.transformer.drop(
             self.transformer.wte(input_ids) + self.transformer.wpe(position_ids)
         )
-        for block in self.transformer.h[: self.probe_layer]:
+        for block in self.transformer.h[:layer_start]:
             hidden = block(hidden)
         return hidden  # (1, T, INPUT_DIM)
 
@@ -187,7 +190,7 @@ def gpt2_full_intervention(
     last_pos = seq_length - 1
 
     with torch.no_grad():
-        whole_mid_act = model.forward_1st_stage(input_ids)  # (1, T, INPUT_DIM)
+        whole_mid_act = model.forward_1st_stage(input_ids, layer_start)  # (1, T, INPUT_DIM)
 
     # First intervention (before block layer_start)
     mid_act = whole_mid_act[0, last_pos]
@@ -223,16 +226,14 @@ def gpt2_full_intervention(
 # ---------------------------------------------------------------------------
 
 def get_probs_original(
-    model: GPT2forIntervention,
+    hf_model,
     input_ids: torch.Tensor,
     seq_length: int,
 ) -> torch.Tensor:
     """Standard forward pass — returns softmax probs at last position (vocab_size,)."""
     with torch.no_grad():
-        whole_hidden = model.forward_1st_stage(input_ids)
-        whole_hidden, _ = model.forward_2nd_stage(whole_hidden, model.probe_layer, N_LAYERS)
-        logits, _ = model.predict(whole_hidden)
-    last_logits = logits[0, seq_length - 1, :]
+        outputs = hf_model(input_ids)
+    last_logits = outputs.logits[0, seq_length - 1, :]
     return torch.softmax(last_logits, dim=-1)
 
 
@@ -251,52 +252,79 @@ def tv_distance(probs_a: torch.Tensor, probs_b: torch.Tensor) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Top-5 diagnostic
+# ---------------------------------------------------------------------------
+
+def top_tokens_str(
+    probs: torch.Tensor,
+    tokenizer,
+    vocab_labels: dict[int, str],
+    n: int = 5,
+) -> str:
+    """Return a one-line string showing the top-n tokens with their VADER label."""
+    top_ids = probs.argsort(descending=True)[:n].tolist()
+    parts = []
+    for token_id in top_ids:
+        token_str = repr(tokenizer.decode([token_id]))
+        label = vocab_labels.get(token_id, "neutral")[0].upper()  # P/N/U
+        prob = probs[token_id].item()
+        parts.append(f"{token_str}({label},{prob:.3f})")
+    return "  ".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # Persistence rollout
 # ---------------------------------------------------------------------------
 
 def measure_persistence(
-    model: GPT2forIntervention,
-    tokenizer,
+    hf_model,
     input_ids: torch.Tensor,
-    probs_original: torch.Tensor,
-    probs_intervened: torch.Tensor,
+    probs_before: torch.Tensor,
+    probs_after: torch.Tensor,
     n_steps: int = 5,
 ) -> list[float]:
     """
-    Force the top-1 pre-intervention token, then roll out n_steps tokens
-    from the modified hidden state (post-intervention) vs the original.
+    Compare two greedy rollouts starting from the intervention point:
+      - Original path:   appends top-1(probs_before), then greedy
+      - Intervened path: appends top-1(probs_after),  then greedy
 
-    Returns TV divergence at each rollout step (should decrease — the
-    intervention effect fades as new context overwhelms it).
+    Returns TV distance between the two distributions at each subsequent step.
+
+    Note: once we move past the intervention point with a standard forward pass,
+    the hidden-state perturbation is gone — any remaining divergence is purely
+    due to different token choices propagating through context. Rising TV means
+    the paths are compounding; falling TV means they converge back.
     """
-    # Top-1 token from pre-intervention distribution (force same next token)
-    forced_token_id = int(probs_original.argmax())
-    forced_token_tensor = torch.tensor([[forced_token_id]], device=input_ids.device)
+    original_next = int(probs_before.argmax())
+    intervened_next = int(probs_after.argmax())
 
-    base_ids = torch.cat([input_ids, forced_token_tensor], dim=1)
+    original_ids = torch.cat(
+        [input_ids, torch.tensor([[original_next]], device=input_ids.device)], dim=1
+    )
+    intervened_ids = torch.cat(
+        [input_ids, torch.tensor([[intervened_next]], device=input_ids.device)], dim=1
+    )
 
     tv_distances = []
     for _ in range(n_steps):
-        if base_ids.shape[1] > 1024:  # GPT-2 context limit
+        if original_ids.shape[1] > 1023 or intervened_ids.shape[1] > 1023:
             break
-        probs_base = get_probs_original(model, base_ids, base_ids.shape[1])
 
-        # Use intervened top-1 as context for this step
-        intervened_token_id = int(probs_intervened.argmax())
+        probs_orig = get_probs_original(hf_model, original_ids, original_ids.shape[1])
+        probs_int  = get_probs_original(hf_model, intervened_ids, intervened_ids.shape[1])
+
+        tv_distances.append(tv_distance(probs_orig, probs_int))
+
+        # Each path advances greedily from its own distribution
+        next_orig = int(probs_orig.argmax())
+        next_int  = int(probs_int.argmax())
+
+        original_ids   = torch.cat(
+            [original_ids,   torch.tensor([[next_orig]], device=input_ids.device)], dim=1
+        )
         intervened_ids = torch.cat(
-            [input_ids, torch.tensor([[intervened_token_id]], device=input_ids.device)],
-            dim=1,
+            [intervened_ids, torch.tensor([[next_int]],  device=input_ids.device)], dim=1
         )
-        probs_int = get_probs_original(model, intervened_ids, intervened_ids.shape[1])
-
-        tv_distances.append(tv_distance(probs_base, probs_int))
-
-        # Advance base_ids by one (greedy)
-        next_token = int(probs_base.argmax())
-        base_ids = torch.cat(
-            [base_ids, torch.tensor([[next_token]], device=input_ids.device)], dim=1
-        )
-        probs_intervened = probs_int  # update for next step
 
     return tv_distances
 
@@ -305,11 +333,11 @@ def measure_persistence(
 # Model and probe loading
 # ---------------------------------------------------------------------------
 
-def load_gpt2_for_intervention(probe_layer: int, device: torch.device) -> GPT2forIntervention:
+def load_gpt2(device: torch.device):
     from transformers import GPT2LMHeadModel
     hf_model = GPT2LMHeadModel.from_pretrained("gpt2")
     hf_model = hf_model.to(device).eval()
-    return GPT2forIntervention(hf_model, probe_layer=probe_layer)
+    return hf_model
 
 
 def load_probes(
@@ -337,29 +365,132 @@ def load_probes(
     return probes
 
 
-def load_vocab_labels(path: Path) -> tuple[set[int], set[int]]:
-    """Load VADER-labeled vocab, return (positive_token_ids, negative_token_ids)."""
+def load_vocab_labels(path: Path) -> tuple[dict[int, str], set[int], set[int]]:
+    """Load VADER-labeled vocab; return (full_dict, positive_ids, negative_ids)."""
     with open(path) as f:
         raw = json.load(f)
-    positive_token_ids = {int(token_id) for token_id, label in raw.items() if label == "positive"}
-    negative_token_ids = {int(token_id) for token_id, label in raw.items() if label == "negative"}
-    return positive_token_ids, negative_token_ids
+    full_dict = {int(token_id): label for token_id, label in raw.items()}
+    positive_token_ids = {k for k, v in full_dict.items() if v == "positive"}
+    negative_token_ids = {k for k, v in full_dict.items() if v == "negative"}
+    return full_dict, positive_token_ids, negative_token_ids
+
+
+# ---------------------------------------------------------------------------
+# Per-layer-set experiment
+# ---------------------------------------------------------------------------
+
+def run_layer_set(
+    hf_model,
+    model: GPT2forIntervention,
+    probes: dict[int, BatteryProbeClassificationTwoLayer],
+    tokenizer,
+    negative_examples: list[str],
+    vocab_labels: dict[int, str],
+    positive_token_ids: set[int],
+    negative_token_ids: set[int],
+    layer_start: int,
+    layer_end: int,
+    lr: float,
+    steps: int,
+    reg_strength: float,
+    n_rollout: int,
+    device: torch.device,
+    show_diagnostic: bool = False,
+) -> dict:
+    """Run intervention for one layer set, return result dict."""
+    rank_positive_before_list: list[float] = []
+    rank_positive_after_list: list[float] = []
+    rank_negative_before_list: list[float] = []
+    rank_negative_after_list: list[float] = []
+    tv_distance_list: list[float] = []
+    tv_persistence_steps: list[list[float]] = []
+
+    diagnostic_shown = False
+
+    for example_index, sentence in enumerate(negative_examples):
+        print(f"  [{layer_start},{layer_end}) Example {example_index + 1}/{len(negative_examples)}", end="\r")
+
+        encoding = tokenizer(sentence, return_tensors="pt")
+        input_ids = encoding["input_ids"].to(device)
+        seq_length = input_ids.shape[1]
+        if seq_length > 1020:
+            input_ids = input_ids[:, :1020]
+            seq_length = 1020
+
+        labels_current = torch.tensor([SENTIMENT_NEGATIVE], dtype=torch.long, device=device)
+
+        probs_before = get_probs_original(hf_model, input_ids, seq_length)
+
+        probs_after = gpt2_full_intervention(
+            model=model,
+            probes=probes,
+            input_ids=input_ids,
+            seq_length=seq_length,
+            labels_current=labels_current,
+            flip_position=0,
+            flip_to=SENTIMENT_POSITIVE,
+            layer_start=layer_start,
+            layer_end=layer_end,
+            lr=lr,
+            steps=steps,
+            reg_strength=reg_strength,
+        )
+
+        rank_positive_before_list.append(mean_rank_of_tokens(probs_before, positive_token_ids))
+        rank_positive_after_list.append(mean_rank_of_tokens(probs_after,  positive_token_ids))
+        rank_negative_before_list.append(mean_rank_of_tokens(probs_before, negative_token_ids))
+        rank_negative_after_list.append(mean_rank_of_tokens(probs_after,  negative_token_ids))
+        tv_distance_list.append(tv_distance(probs_before, probs_after))
+
+        if n_rollout > 0:
+            tv_persistence_steps.append(
+                measure_persistence(hf_model, input_ids, probs_before, probs_after, n_rollout)
+            )
+
+        if show_diagnostic and not diagnostic_shown:
+            diagnostic_shown = True
+            print(f"\n  [Diagnostic — first example, layers {layer_start}–{layer_end - 1}]")
+            print(f"  Sentence: {sentence[:80]!r}")
+            print(f"  Before: {top_tokens_str(probs_before, tokenizer, vocab_labels)}")
+            print(f"  After:  {top_tokens_str(probs_after,  tokenizer, vocab_labels)}")
+            print()
+
+    print(f"  [{layer_start},{layer_end}) Done ({len(negative_examples)} examples)       ")
+
+    return {
+        "layer_start": layer_start,
+        "layer_end": layer_end,
+        "rank_pos_before": float(np.mean(rank_positive_before_list)),
+        "rank_pos_after":  float(np.mean(rank_positive_after_list)),
+        "rank_neg_before": float(np.mean(rank_negative_before_list)),
+        "rank_neg_after":  float(np.mean(rank_negative_after_list)),
+        "mean_tv":         float(np.mean(tv_distance_list)),
+        "tv_persistence":  tv_persistence_steps,
+    }
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
+def parse_layer_sets(layer_sets_raw: list[str]) -> list[tuple[int, int]]:
+    result = []
+    for item in layer_sets_raw:
+        parts = item.split(",")
+        if len(parts) != 2:
+            raise ValueError(f"--layer-sets items must be 'start,end', got: {item!r}")
+        result.append((int(parts[0]), int(parts[1])))
+    return result
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="GPT-2 sentiment steering via probe-based gradient descent intervention."
     )
     parser.add_argument("--n-examples",   type=int,   default=100,
-                        help="Number of negative SST-2 examples to process (default: 100)")
-    parser.add_argument("--layer-start",  type=int,   default=6,
-                        help="First intervention layer (default: 6)")
-    parser.add_argument("--layer-end",    type=int,   default=10,
-                        help="Last intervention layer exclusive (default: 10)")
+                        help="Number of negative SST-2 examples (default: 100)")
+    parser.add_argument("--layer-sets",   type=str,   nargs="+", default=["6,10"],
+                        help="Layer ranges to try, e.g. --layer-sets 6,10 7,11 8,12 (default: 6,10)")
     parser.add_argument("--lr",           type=float, default=1e-3)
     parser.add_argument("--steps",        type=int,   default=1000)
     parser.add_argument("--reg-strength", type=float, default=0.2)
@@ -367,6 +498,54 @@ def parse_args() -> argparse.Namespace:
                         help="Rollout steps for persistence measurement (default: 5)")
     parser.add_argument("--seed",         type=int,   default=42)
     return parser.parse_args()
+
+
+def print_results(results: list[dict], n_rollout: int) -> None:
+    print("\n" + "=" * 70)
+    print("RESULTS SUMMARY")
+    print("=" * 70)
+    print(f"{'Layers':<10} {'Rank+Δ':>10} {'Rank−Δ':>10} {'TV':>8}  {'Verdict'}")
+    print(f"{'-'*10} {'-'*10} {'-'*10} {'-'*8}  {'-'*20}")
+    for result in results:
+        layer_str = f"{result['layer_start']}–{result['layer_end'] - 1}"
+        rank_pos_delta = result["rank_pos_after"] - result["rank_pos_before"]
+        rank_neg_delta = result["rank_neg_after"] - result["rank_neg_before"]
+        tv = result["mean_tv"]
+        # Positive tokens should move UP (rank goes DOWN = negative delta)
+        # Negative tokens should move DOWN (rank goes UP = positive delta)
+        verdict = ""
+        if rank_pos_delta < 0:
+            verdict += "POS↑ "
+        else:
+            verdict += "POS↓ "
+        if rank_neg_delta > 0:
+            verdict += "NEG↓"
+        else:
+            verdict += "NEG↑"
+        print(f"{layer_str:<10} {rank_pos_delta:>+10.0f} {rank_neg_delta:>+10.0f} {tv:>8.4f}  {verdict}")
+
+    print()
+    for result in results:
+        layer_str = f"{result['layer_start']}–{result['layer_end'] - 1}"
+        persistence = result["tv_persistence"]
+        if not persistence:
+            continue
+        max_steps = min(n_rollout, min(len(steps) for steps in persistence))
+        if max_steps == 0:
+            continue
+        step_means = []
+        for step_index in range(max_steps):
+            step_tvs = [steps[step_index] for steps in persistence if step_index < len(steps)]
+            step_means.append(float(np.mean(step_tvs)))
+        print(f"  Layers {layer_str} persistence: " + "  ".join(f"t+{i+1}={v:.3f}" for i, v in enumerate(step_means)))
+
+    print()
+    print("Rank columns show mean rank change of POSITIVE (+) and NEGATIVE (−) tokens.")
+    print("POS↑ = positive tokens moved to higher probability (good).")
+    print("NEG↓ = negative tokens moved to lower probability (good).")
+    print("Persistence: TV distance between greedy rollouts at each step after intervention.")
+    print("Rising TV = paths diverged due to different token choices (not persistent state).")
+    print("=" * 70)
 
 
 def main() -> None:
@@ -378,27 +557,28 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    # Load vocabulary sentiment labels
+    layer_sets = parse_layer_sets(args.layer_sets)
+    all_layers_needed = sorted({layer for start, end in layer_sets for layer in range(start, end)})
+    print(f"Layer sets: {layer_sets}")
+    print(f"Probes needed: {all_layers_needed}")
+
     if not VOCAB_LABELS_PATH.exists():
         raise FileNotFoundError(
             f"{VOCAB_LABELS_PATH} not found. Run label_vocab_sentiment.py first."
         )
-    positive_token_ids, negative_token_ids = load_vocab_labels(VOCAB_LABELS_PATH)
-    print(f"Vocab labels: {len(positive_token_ids):,} positive, {len(negative_token_ids):,} negative tokens")
+    vocab_labels, positive_token_ids, negative_token_ids = load_vocab_labels(VOCAB_LABELS_PATH)
+    print(f"Vocab: {len(positive_token_ids):,} positive, {len(negative_token_ids):,} negative tokens")
 
-    # Load model and probes
-    intervention_layers = list(range(args.layer_start, args.layer_end))
-    print(f"Loading GPT-2 (probe_layer={args.layer_start})...")
-    model = load_gpt2_for_intervention(probe_layer=args.layer_start, device=device)
+    print("Loading GPT-2...")
+    hf_model = load_gpt2(device)
+    model = GPT2forIntervention(hf_model)
 
-    print(f"Loading probes for layers {intervention_layers}...")
-    probes = load_probes(intervention_layers, device)
+    print(f"Loading probes for layers {all_layers_needed}...")
+    probes = load_probes(all_layers_needed, device)
 
-    # Load tokenizer
     tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
     tokenizer.pad_token = tokenizer.eos_token
 
-    # Load negative SST-2 validation examples
     print("Loading SST-2...")
     dataset = load_dataset("glue", "sst2")
     negative_examples = [
@@ -406,127 +586,31 @@ def main() -> None:
         for example in dataset["validation"]
         if example["label"] == SENTIMENT_NEGATIVE
     ][: args.n_examples]
-    print(f"  {len(negative_examples)} negative examples")
+    print(f"  {len(negative_examples)} negative examples\n")
 
-    # Accumulators
-    rank_positive_before_list: list[float] = []
-    rank_positive_after_list: list[float] = []
-    rank_negative_before_list: list[float] = []
-    rank_negative_after_list: list[float] = []
-    tv_distance_list: list[float] = []
-    tv_persistence_steps: list[list[float]] = []
-
-    print(f"\nRunning interventions (layers {args.layer_start}–{args.layer_end - 1})...")
-
-    for example_index, sentence in enumerate(negative_examples):
-        print(f"  Example {example_index + 1}/{len(negative_examples)}", end="\r")
-
-        encoding = tokenizer(sentence, return_tensors="pt")
-        input_ids = encoding["input_ids"].to(device)
-        seq_length = input_ids.shape[1]
-
-        # Clamp to GPT-2 context limit
-        if seq_length > 1020:
-            input_ids = input_ids[:, :1020]
-            seq_length = 1020
-
-        # Labels: this is a negative example
-        labels_current = torch.tensor([SENTIMENT_NEGATIVE], dtype=torch.long, device=device)
-
-        # Pre-intervention distribution
-        probs_before = get_probs_original(model, input_ids, seq_length)
-
-        # Intervention: flip negative → positive
-        probs_after = gpt2_full_intervention(
+    all_results = []
+    for set_index, (layer_start, layer_end) in enumerate(layer_sets):
+        result = run_layer_set(
+            hf_model=hf_model,
             model=model,
             probes=probes,
-            input_ids=input_ids,
-            seq_length=seq_length,
-            labels_current=labels_current,
-            flip_position=0,
-            flip_to=SENTIMENT_POSITIVE,
-            layer_start=args.layer_start,
-            layer_end=args.layer_end,
+            tokenizer=tokenizer,
+            negative_examples=negative_examples,
+            vocab_labels=vocab_labels,
+            positive_token_ids=positive_token_ids,
+            negative_token_ids=negative_token_ids,
+            layer_start=layer_start,
+            layer_end=layer_end,
             lr=args.lr,
             steps=args.steps,
             reg_strength=args.reg_strength,
+            n_rollout=args.n_rollout,
+            device=device,
+            show_diagnostic=(set_index == 0),  # only for first layer set
         )
+        all_results.append(result)
 
-        # Rank metrics
-        rank_positive_before_list.append(
-            mean_rank_of_tokens(probs_before, positive_token_ids)
-        )
-        rank_positive_after_list.append(
-            mean_rank_of_tokens(probs_after, positive_token_ids)
-        )
-        rank_negative_before_list.append(
-            mean_rank_of_tokens(probs_before, negative_token_ids)
-        )
-        rank_negative_after_list.append(
-            mean_rank_of_tokens(probs_after, negative_token_ids)
-        )
-        tv_distance_list.append(tv_distance(probs_before, probs_after))
-
-        # Persistence
-        if args.n_rollout > 0:
-            persistence = measure_persistence(
-                model, tokenizer, input_ids, probs_before, probs_after, args.n_rollout,
-            )
-            tv_persistence_steps.append(persistence)
-
-    print(f"\n  Done ({len(negative_examples)} examples)")
-
-    # Aggregate results
-    rank_pos_before = float(np.mean(rank_positive_before_list))
-    rank_pos_after  = float(np.mean(rank_positive_after_list))
-    rank_neg_before = float(np.mean(rank_negative_before_list))
-    rank_neg_after  = float(np.mean(rank_negative_after_list))
-    mean_tv         = float(np.mean(tv_distance_list))
-
-    print("\n" + "=" * 60)
-    print("RESULTS")
-    print("=" * 60)
-    print(f"Examples processed : {len(negative_examples)}")
-    print(f"Layers             : {args.layer_start}–{args.layer_end - 1}")
-    print()
-    print(f"{'Metric':<40} {'Before':>10} {'After':>10} {'Change':>10}")
-    print(f"{'-'*40} {'-'*10} {'-'*10} {'-'*10}")
-    print(
-        f"{'Mean rank of POSITIVE tokens':<40} "
-        f"{rank_pos_before:>10.1f} "
-        f"{rank_pos_after:>10.1f} "
-        f"{rank_pos_after - rank_pos_before:>+10.1f}"
-    )
-    print(
-        f"{'Mean rank of NEGATIVE tokens':<40} "
-        f"{rank_neg_before:>10.1f} "
-        f"{rank_neg_after:>10.1f} "
-        f"{rank_neg_after - rank_neg_before:>+10.1f}"
-    )
-    print(f"\nMean TV distance (before vs after): {mean_tv:.4f}")
-
-    if tv_persistence_steps:
-        max_steps = min(args.n_rollout, min(len(steps) for steps in tv_persistence_steps))
-        if max_steps > 0:
-            print(f"\nTV distance persistence over {max_steps} rollout steps:")
-            for step_index in range(max_steps):
-                step_tvs = [
-                    steps[step_index]
-                    for steps in tv_persistence_steps
-                    if step_index < len(steps)
-                ]
-                print(f"  Step {step_index + 1}: {float(np.mean(step_tvs)):.4f}")
-
-    print("=" * 60)
-    print()
-    print("Interpretation:")
-    print("  Positive tokens moving UP (rank decreasing) = intervention")
-    print("  steered distribution toward positive sentiment.")
-    print("  Negative tokens moving DOWN (rank increasing) = intervention")
-    print("  suppressed negative-sentiment tokens.")
-    print("  TV persistence fading = one-shot residual perturbation,")
-    print("  not a persistent state change — consistent with activation-space")
-    print("  steering, not world model state switching.")
+    print_results(all_results, args.n_rollout)
 
 
 if __name__ == "__main__":
