@@ -436,10 +436,11 @@ def analyse_position(
     ranks_before_unique = ranks_of_positions(probs_original,   unique_to_target)
     ranks_after_unique  = ranks_of_positions(probs_intervened, unique_to_target)
 
-    # Rank of B-legal-but-B'-illegal moves after intervention
+    # Rank of B-legal-but-B'-illegal moves before and after intervention
     # These should be pushed DOWN if the model genuinely tracks B'
     only_in_source = source_legal_set - target_legal_set
-    ranks_only_source_after = ranks_of_positions(probs_intervened, only_in_source)
+    ranks_only_source_before = ranks_of_positions(probs_original,   only_in_source)
+    ranks_only_source_after  = ranks_of_positions(probs_intervened, only_in_source)
 
     # Rollout persistence
     m_star = top1_position(probs_intervened)
@@ -502,8 +503,9 @@ def analyse_position(
         "m_star_unique_to_target":   m_star_unique_to_target,
         "ranks_before_unique":         ranks_before_unique,
         "ranks_after_unique":          ranks_after_unique,
-        "n_only_in_source":            len(only_in_source),
-        "ranks_only_source_after":     ranks_only_source_after,
+        "n_only_in_source":              len(only_in_source),
+        "ranks_only_source_before":     ranks_only_source_before,
+        "ranks_only_source_after":      ranks_only_source_after,
         "rollout_illegal_rate":                  rollout_illegal_rate,
         "baseline_illegal_rate":                 baseline_illegal_rate,
         "forced_unique_rollout_illegal_rate":     forced_unique_rollout_illegal_rate,
@@ -551,7 +553,8 @@ def report(all_results: list[dict], layer_start: int, layer_end: int, n_rollout:
     all_ranks_after  = [rank for r in all_results for rank in r["ranks_after_unique"]]
     has_unique = [r for r in all_results if r["n_unique_to_target"] > 0]
 
-    all_ranks_only_source_after = [rank for r in all_results for rank in r["ranks_only_source_after"]]
+    all_ranks_only_source_before = [rank for r in all_results for rank in r["ranks_only_source_before"]]
+    all_ranks_only_source_after  = [rank for r in all_results for rank in r["ranks_only_source_after"]]
     has_only_source = [r for r in all_results if r["n_only_in_source"] > 0]
 
     print("\n" + "=" * 80)
@@ -565,12 +568,14 @@ def report(all_results: list[dict], layer_start: int, layer_end: int, n_rollout:
         print(f"  mean rank improvement (before − after): {rank_improvement:.1f}  (positive = moved up)")
 
     print("\n" + "=" * 80)
-    print("Rank of B-legal-but-B'-illegal moves after intervention")
-    print("(should be pushed DOWN if model genuinely tracks B')")
+    print("Rank of B-legal-but-B'-illegal moves (should be pushed DOWN)")
     print("=" * 80)
     print(f"\n  Positions with at least one B-only move: {len(has_only_source)}/{n}")
-    if all_ranks_only_source_after:
-        print(f"  mean rank after intervention: {np.mean(all_ranks_only_source_after):.1f}  (median {np.median(all_ranks_only_source_after):.0f})")
+    if all_ranks_only_source_before:
+        print(f"  mean rank before intervention: {np.mean(all_ranks_only_source_before):.1f}  (median {np.median(all_ranks_only_source_before):.0f})")
+        print(f"  mean rank after  intervention: {np.mean(all_ranks_only_source_after):.1f}  (median {np.median(all_ranks_only_source_after):.0f})")
+        rank_drop = np.mean(all_ranks_only_source_after) - np.mean(all_ranks_only_source_before)
+        print(f"  mean rank drop (after − before): {rank_drop:.1f}  (positive = pushed down)")
 
     print("\n" + "=" * 80)
     print(f"Rollout persistence  ({n_rollout} steps)")
