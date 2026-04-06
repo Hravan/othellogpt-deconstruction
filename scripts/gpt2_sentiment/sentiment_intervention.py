@@ -612,7 +612,7 @@ def run_sst2_stem_prompts(
         prompts_run += 1
 
         print(
-            f"{stem[:34]:<34} {words[-1][:14]:<14} {conf_before:.3f} "
+            f"{stem[:34]:<34} {words[split_index][:14]:<14} {conf_before:.3f} "
             f"{rank_neg_before:>7.0f} {rank_neg_after:>7.0f} "
             f"{rank_pos_before:>7.0f} {rank_pos_after:>7.0f}"
         )
