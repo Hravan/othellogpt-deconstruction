@@ -73,7 +73,6 @@ def extract_hidden_states(
                 padding=True,
                 truncation=True,
                 max_length=MAX_SEQ_LEN,
-                padding_side="left",
             )
             input_ids = encoding["input_ids"].to(device)
             attention_mask = encoding["attention_mask"].to(device)
