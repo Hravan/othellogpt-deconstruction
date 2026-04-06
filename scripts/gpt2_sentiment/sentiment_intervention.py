@@ -551,6 +551,11 @@ def run_sst2_stem_prompts(
     rank_pos_after_list:  list[float] = []
     prompts_run = 0
 
+    # Cache negative token IDs to avoid reloading vocab on every sentence
+    with open(VOCAB_LABELS_PATH) as vocab_file:
+        vocab_raw = json.load(vocab_file)
+    negative_vocab_ids = {int(token_id) for token_id, label in vocab_raw.items() if label == "negative"}
+
     for sentence in negative_examples:
         if prompts_run >= max_prompts:
             break
@@ -559,8 +564,19 @@ def run_sst2_stem_prompts(
         if len(words) < 3:
             continue
 
-        stem = " ".join(words[:-1])
-        last_word_str = " " + words[-1]  # leading space: GPT-2 tokenizes " great" ≠ "great"
+        # Find the last word that is VADER-negative (scan backward, skip index 0)
+        split_index = None
+        for word_index in range(len(words) - 1, 0, -1):
+            token_id = tokenizer.encode(" " + words[word_index])[0]
+            if token_id in negative_vocab_ids:
+                split_index = word_index
+                break
+
+        if split_index is None:
+            continue
+
+        stem = " ".join(words[:split_index])
+        last_word_str = " " + words[split_index]
 
         encoding = tokenizer(stem, return_tensors="pt")
         input_ids = encoding["input_ids"].to(device)
