@@ -75,7 +75,7 @@ class GPT2forIntervention:
             self.transformer.wte(input_ids) + self.transformer.wpe(position_ids)
         )
         for block in self.transformer.h[: self.probe_layer]:
-            hidden = block(hidden)[0]
+            hidden = block(hidden)
         return hidden  # (1, T, INPUT_DIM)
 
     @torch.no_grad()
@@ -91,7 +91,7 @@ class GPT2forIntervention:
         Returns (hidden, None) to match the mingpt signature.
         """
         for block in self.transformer.h[layer_start:layer_end]:
-            hidden = block(hidden)[0]
+            hidden = block(hidden)
         return hidden, None
 
     @torch.no_grad()
