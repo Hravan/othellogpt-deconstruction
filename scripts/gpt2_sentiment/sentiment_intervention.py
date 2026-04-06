@@ -567,6 +567,8 @@ def run_sst2_stem_prompts(
         # Find the last word that is VADER-negative (scan backward, skip index 0)
         split_index = None
         for word_index in range(len(words) - 1, 0, -1):
+            if not any(char.isalpha() for char in words[word_index]):
+                continue  # skip punctuation-only tokens (".", "...", etc.)
             token_id = tokenizer.encode(" " + words[word_index])[0]
             if token_id in negative_vocab_ids:
                 split_index = word_index
