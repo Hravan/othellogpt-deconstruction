@@ -13,18 +13,17 @@ on each semantically identical question and computes:
 A model with stable semantic representations should produce nearly identical
 distributions for all questions in a group, giving SS ≈ 0.
 
-The model sees each question formatted as:
+Base model mode (default): prompt is "{question}\nAnswer:"
+Instruct mode (--instruct):  prompt uses the tokenizer's chat template with
+  a system prompt appropriate for the answer type (yes/no or word).
 
-    {question}
-    Answer:
-
-and we record the full next-token probability distribution at that position.
 TV distance is computed over the complete vocabulary (exact, not approximated).
 
 Usage
 -----
     uv run python scripts/hf_ss_test.py
     uv run python scripts/hf_ss_test.py --model gpt2-medium
+    uv run python scripts/hf_ss_test.py --model Qwen/Qwen2-1.5B-Instruct --instruct
     uv run python scripts/hf_ss_test.py --n-groups 100 --category capital_word_order
     uv run python scripts/hf_ss_test.py --output data/ss_results_gpt2.json
 """
@@ -42,6 +41,15 @@ YES_TOKENS = {"Yes", "YES", "yes", " Yes", " YES", " yes", "Y", "y", "Ye"}
 NO_TOKENS  = {"No",  "NO",  "no",  " No",  " NO",  " no",  "N", "n"}
 
 ANSWER_PREFIX = "\nAnswer:"
+
+SYSTEM_PROMPT_YES_NO = (
+    "Answer the following yes/no question with a single word: either 'Yes' or 'No'. "
+    "Do not add any explanation."
+)
+SYSTEM_PROMPT_WORD = (
+    "Answer the following question with a single word or number. "
+    "Do not add any explanation."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -65,12 +73,28 @@ def get_next_token_distribution(
     model,
     question: str,
     device: torch.device,
+    instruct: bool = False,
+    answer_type: str = "yes_no",
 ) -> torch.Tensor:
     """
-    Return the full next-token probability distribution (vocab_size,) after
-    the prompt "{question}\nAnswer:".
+    Return the full next-token probability distribution (vocab_size,).
+
+    Base mode:    prompt = "{question}\nAnswer:"
+    Instruct mode: prompt built from tokenizer chat template with appropriate
+                   system prompt for the answer type.
     """
-    prompt = question + ANSWER_PREFIX
+    if instruct:
+        system_prompt = SYSTEM_PROMPT_WORD if answer_type == "word" else SYSTEM_PROMPT_YES_NO
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": question},
+        ]
+        prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+    else:
+        prompt = question + ANSWER_PREFIX
+
     input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
     logits = model(input_ids).logits[0, -1, :]  # (vocab_size,)
     return torch.softmax(logits, dim=-1).cpu()
@@ -183,6 +207,8 @@ def parse_args() -> argparse.Namespace:
                         help="Test only this category (default: all)")
     parser.add_argument("--output",   default=None,
                         help="Save full results JSON to this path")
+    parser.add_argument("--instruct", action="store_true",
+                        help="Use chat template instead of raw completion prompt")
     return parser.parse_args()
 
 
@@ -214,7 +240,10 @@ def main() -> None:
 
         answer_type = group.get("answer_type", "yes_no")
         distributions = [
-            get_next_token_distribution(tokenizer, model, question, device)
+            get_next_token_distribution(
+                tokenizer, model, question, device,
+                instruct=args.instruct, answer_type=answer_type,
+            )
             for question in group["questions"]
         ]
         metrics = group_metrics(distributions, tokenizer, answer_type)
