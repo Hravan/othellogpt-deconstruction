@@ -56,10 +56,18 @@ SYSTEM_PROMPT_WORD = (
 # Model loading
 # ---------------------------------------------------------------------------
 
-def load_model(model_name: str, device: torch.device):
+def load_model(model_name: str, device: torch.device, load_in_8bit: bool = False):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name)
-    model = model.to(device).eval()
+    if load_in_8bit:
+        from transformers import BitsAndBytesConfig
+        quantization_config = BitsAndBytesConfig(load_in_8bit=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, quantization_config=quantization_config, device_map="auto"
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(model_name)
+        model = model.to(device)
+    model.eval()
     return tokenizer, model
 
 
@@ -95,9 +103,11 @@ def get_next_token_distribution(
     else:
         prompt = question + ANSWER_PREFIX
 
-    input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
+    input_ids = tokenizer.encode(prompt, return_tensors="pt")
+    if device.type != "cpu":
+        input_ids = input_ids.to(device)
     logits = model(input_ids).logits[0, -1, :]  # (vocab_size,)
-    return torch.softmax(logits, dim=-1).cpu()
+    return torch.softmax(logits.float(), dim=-1).cpu()
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +219,8 @@ def parse_args() -> argparse.Namespace:
                         help="Save full results JSON to this path")
     parser.add_argument("--instruct", action="store_true",
                         help="Use chat template instead of raw completion prompt")
+    parser.add_argument("--load-in-8bit", action="store_true",
+                        help="Load model in 8-bit quantization (requires bitsandbytes)")
     return parser.parse_args()
 
 
@@ -227,8 +239,8 @@ def main() -> None:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
-    print(f"Loading {args.model}...")
-    tokenizer, model = load_model(args.model, device)
+    print(f"Loading {args.model}{'  (8-bit)' if args.load_in_8bit else ''}...")
+    tokenizer, model = load_model(args.model, device, load_in_8bit=args.load_in_8bit)
 
     total_questions = sum(len(g["questions"]) for g in all_groups)
     print(f"Testing {len(all_groups)} groups ({total_questions} questions)...")
