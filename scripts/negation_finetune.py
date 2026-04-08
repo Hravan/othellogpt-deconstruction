@@ -306,7 +306,7 @@ def main() -> None:
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
         learning_rate=args.learning_rate,
-        warmup_ratio=0.1,
+        warmup_steps=16,
         lr_scheduler_type="cosine",
         logging_steps=10,
         save_strategy="epoch",
@@ -320,7 +320,7 @@ def main() -> None:
         args=training_args,
         train_dataset=dataset,
         data_collator=collate_fn,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
     )
 
     print(f"\nTraining on {len(dataset)} examples for {args.epochs} epochs...")
