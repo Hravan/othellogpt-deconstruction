@@ -30,12 +30,16 @@ Usage
 
 import argparse
 import json
+import os
 from collections import defaultdict
 from itertools import combinations
 from pathlib import Path
 
 import torch
+from dotenv import load_dotenv
 from transformers import AutoTokenizer, AutoModelForCausalLM
+
+load_dotenv()
 
 YES_TOKENS = {"Yes", "YES", "yes", " Yes", " YES", " yes", "Y", "y", "Ye"}
 NO_TOKENS  = {"No",  "NO",  "no",  " No",  " NO",  " no",  "N", "n"}
