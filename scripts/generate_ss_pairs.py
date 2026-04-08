@@ -610,6 +610,284 @@ while len(seen_result_sums) < 100:
 
 
 # ---------------------------------------------------------------------------
+# 11. Large-number arithmetic commutativity  (200 yes + 100 no groups × 3 questions)
+#
+# Same structure as arithmetic_order but with 3-digit numbers (100–999).
+# Models that memorised small-number arithmetic facts may still fail here.
+# ---------------------------------------------------------------------------
+
+seen_large_sums: set[tuple] = set()
+while len(seen_large_sums) < 200:
+    a = rng.randint(100, 999)
+    b = rng.randint(100, 999)
+    key = (min(a, b), max(a, b))
+    if key in seen_large_sums:
+        continue
+    seen_large_sums.add(key)
+    c = a + b
+    groups.append({
+        "category": "arithmetic_large",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {a} plus {b} equal to {c}?",
+            f"Does {b} plus {a} equal {c}?",
+            f"Is {c} the sum of {a} and {b}?",
+        ],
+        "expected": "yes",
+    })
+
+seen_large_no_sums: set[tuple] = set()
+while len(seen_large_no_sums) < 100:
+    a = rng.randint(100, 999)
+    b = rng.randint(100, 999)
+    key = (min(a, b), max(a, b))
+    if key in seen_large_no_sums or key in seen_large_sums:
+        continue
+    seen_large_no_sums.add(key)
+    c = a + b
+    wrong_c = c + rng.choice([-3, -2, -1, 1, 2, 3])
+    groups.append({
+        "category": "arithmetic_large",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {a} plus {b} equal to {wrong_c}?",
+            f"Does {b} plus {a} equal {wrong_c}?",
+            f"Is {wrong_c} the sum of {a} and {b}?",
+        ],
+        "expected": "no",
+    })
+
+
+# ---------------------------------------------------------------------------
+# 12. Multiplication commutativity  (200 yes + 100 no groups × 3 questions)
+#
+# "Is A times B equal to C?" ↔ "Is B times A equal to C?" ↔
+# "Is C the product of A and B?"
+# ---------------------------------------------------------------------------
+
+seen_products: set[tuple] = set()
+while len(seen_products) < 200:
+    a = rng.randint(3, 50)
+    b = rng.randint(3, 50)
+    key = (min(a, b), max(a, b))
+    if key in seen_products:
+        continue
+    seen_products.add(key)
+    c = a * b
+    groups.append({
+        "category": "multiplication_order",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {a} times {b} equal to {c}?",
+            f"Does {b} times {a} equal {c}?",
+            f"Is {c} the product of {a} and {b}?",
+        ],
+        "expected": "yes",
+    })
+
+seen_no_products: set[tuple] = set()
+while len(seen_no_products) < 100:
+    a = rng.randint(3, 50)
+    b = rng.randint(3, 50)
+    key = (min(a, b), max(a, b))
+    if key in seen_no_products or key in seen_products:
+        continue
+    seen_no_products.add(key)
+    c = a * b
+    wrong_c = c + rng.choice([-2, -1, 1, 2]) * rng.randint(1, 3)
+    groups.append({
+        "category": "multiplication_order",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {a} times {b} equal to {wrong_c}?",
+            f"Does {b} times {a} equal {wrong_c}?",
+            f"Is {wrong_c} the product of {a} and {b}?",
+        ],
+        "expected": "no",
+    })
+
+
+# ---------------------------------------------------------------------------
+# 13. Subtraction-addition equivalence  (150 yes + 75 no groups × 3 questions)
+#
+# "Is A minus B equal to C?" ↔ "Is C plus B equal to A?" ↔
+# "Is C the result of subtracting B from A?"
+# Tests whether models recognise that subtraction and addition are inverses.
+# ---------------------------------------------------------------------------
+
+seen_subtractions: set[tuple] = set()
+while len(seen_subtractions) < 150:
+    a = rng.randint(20, 200)
+    b = rng.randint(5, a - 5)
+    key = (a, b)
+    if key in seen_subtractions:
+        continue
+    seen_subtractions.add(key)
+    c = a - b
+    groups.append({
+        "category": "subtraction_equivalence",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {a} minus {b} equal to {c}?",
+            f"Is {c} plus {b} equal to {a}?",
+            f"Is {c} the result of subtracting {b} from {a}?",
+        ],
+        "expected": "yes",
+    })
+
+seen_no_subtractions: set[tuple] = set()
+while len(seen_no_subtractions) < 75:
+    a = rng.randint(20, 200)
+    b = rng.randint(5, a - 5)
+    key = (a, b)
+    if key in seen_no_subtractions or key in seen_subtractions:
+        continue
+    seen_no_subtractions.add(key)
+    c = a - b
+    wrong_c = c + rng.choice([-2, -1, 1, 2])
+    groups.append({
+        "category": "subtraction_equivalence",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {a} minus {b} equal to {wrong_c}?",
+            f"Is {wrong_c} plus {b} equal to {a}?",
+            f"Is {wrong_c} the result of subtracting {b} from {a}?",
+        ],
+        "expected": "no",
+    })
+
+
+# ---------------------------------------------------------------------------
+# 14. Convoluted arithmetic phrasings  (150 yes + 75 no groups × 5 questions)
+#
+# Five increasingly indirect phrasings of the same addition fact.
+# Tests whether models maintain consistency as surface form grows more distant
+# from a direct equation.
+# ---------------------------------------------------------------------------
+
+seen_convoluted: set[tuple] = set()
+while len(seen_convoluted) < 150:
+    a = rng.randint(5, 80)
+    b = rng.randint(5, 80)
+    key = (min(a, b), max(a, b))
+    if key in seen_convoluted:
+        continue
+    seen_convoluted.add(key)
+    c = a + b
+    groups.append({
+        "category": "arithmetic_convoluted",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {a} plus {b} equal to {c}?",
+            f"When you add {a} to {b}, do you get {c}?",
+            f"If you start with {a} and add {b}, is the result {c}?",
+            f"Does adding {b} to {a} yield {c}?",
+            f"Is {c} what you get when you combine {a} and {b}?",
+        ],
+        "expected": "yes",
+    })
+
+seen_no_convoluted: set[tuple] = set()
+while len(seen_no_convoluted) < 75:
+    a = rng.randint(5, 80)
+    b = rng.randint(5, 80)
+    key = (min(a, b), max(a, b))
+    if key in seen_no_convoluted or key in seen_convoluted:
+        continue
+    seen_no_convoluted.add(key)
+    c = a + b
+    wrong_c = c + rng.choice([-2, -1, 1, 2])
+    groups.append({
+        "category": "arithmetic_convoluted",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {a} plus {b} equal to {wrong_c}?",
+            f"When you add {a} to {b}, do you get {wrong_c}?",
+            f"If you start with {a} and add {b}, is the result {wrong_c}?",
+            f"Does adding {b} to {a} yield {wrong_c}?",
+            f"Is {wrong_c} what you get when you combine {a} and {b}?",
+        ],
+        "expected": "no",
+    })
+
+
+# ---------------------------------------------------------------------------
+# 15. Double negation  (100 groups × 3 questions)
+#
+# "Is X the capital of Y?" ↔ "Is it false that X is not the capital of Y?" ↔
+# "Is it not the case that X is not the capital of Y?"
+# Tests whether models maintain semantic consistency through double negation.
+# ---------------------------------------------------------------------------
+
+for country, capital in CAPITALS[:100]:
+    groups.append({
+        "category": "double_negation",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {capital} the capital of {country}?",
+            f"Is it false that {capital} is not the capital of {country}?",
+            f"Is it not the case that {capital} is not the capital of {country}?",
+        ],
+        "expected": "yes",
+    })
+
+
+# ---------------------------------------------------------------------------
+# 16. Comparison convoluted  (150 yes + 75 no groups × 4 questions)
+#
+# "Is A greater than B?" ↔ "Is B smaller than A?" ↔ "Does A exceed B?" ↔
+# "Is it true that A is not less than or equal to B?"
+# Extends comparison_symmetric with more convoluted phrasings.
+# ---------------------------------------------------------------------------
+
+seen_convoluted_comparisons: set[tuple] = set()
+while len(seen_convoluted_comparisons) < 150:
+    a = rng.randint(2, 500)
+    b = rng.randint(2, 500)
+    if a == b:
+        continue
+    large, small = max(a, b), min(a, b)
+    key = (large, small)
+    if key in seen_convoluted_comparisons:
+        continue
+    seen_convoluted_comparisons.add(key)
+    groups.append({
+        "category": "comparison_convoluted",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {large} greater than {small}?",
+            f"Is {small} smaller than {large}?",
+            f"Does {large} exceed {small}?",
+            f"Is it true that {large} is not less than or equal to {small}?",
+        ],
+        "expected": "yes",
+    })
+
+seen_no_convoluted_comparisons: set[tuple] = set()
+while len(seen_no_convoluted_comparisons) < 75:
+    a = rng.randint(2, 500)
+    b = rng.randint(2, 500)
+    if a == b:
+        continue
+    large, small = max(a, b), min(a, b)
+    key = (large, small)
+    if key in seen_no_convoluted_comparisons or key in seen_convoluted_comparisons:
+        continue
+    seen_no_convoluted_comparisons.add(key)
+    groups.append({
+        "category": "comparison_convoluted",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {small} greater than {large}?",
+            f"Is {large} smaller than {small}?",
+            f"Does {small} exceed {large}?",
+            f"Is it true that {small} is not less than or equal to {large}?",
+        ],
+        "expected": "no",
+    })
+
+
+# ---------------------------------------------------------------------------
 # Summary and output
 # ---------------------------------------------------------------------------
 
