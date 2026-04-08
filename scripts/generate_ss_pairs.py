@@ -888,6 +888,120 @@ while len(seen_no_convoluted_comparisons) < 75:
 
 
 # ---------------------------------------------------------------------------
+# 17. Negation depth experiment  (100 groups × 4 questions, depths 1–4)
+#
+# Same capital facts as double_negation but extended to depth 3 and 4.
+# Each group has one question at each negation depth:
+#   depth 1: "Is X the capital of Y?"
+#   depth 2: "Is it false that X is not the capital of Y?"
+#   depth 3: "Is it not the case that it is false that X is the capital of Y?"
+#   depth 4: "Is it false that it is not the case that it is false that X is not the capital of Y?"
+#
+# All four questions are logically equivalent (even depths → same as depth 1).
+# Tests whether the model generalises the negation rule across depths.
+# ---------------------------------------------------------------------------
+
+for country, capital in CAPITALS[:100]:
+    groups.append({
+        "category": "negation_depth",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {capital} the capital of {country}?",
+            f"Is it false that {capital} is not the capital of {country}?",
+            f"Is it not the case that it is false that {capital} is the capital of {country}?",
+            f"Is it false that it is not the case that it is false that {capital} is not the capital of {country}?",
+        ],
+        "expected": "yes",
+    })
+
+
+# ---------------------------------------------------------------------------
+# 18. Nested arithmetic negation  (100 yes + 50 no groups × 4 questions)
+#
+# Combines arithmetic verification with negation depth.
+#   depth 1: "Is A+B=C?"
+#   depth 2: "Is it false that A+B is not equal to C?"
+#   depth 3: "Is it not the case that it is false that A+B equals C?"
+#   depth 4: "Is it false that it is not the case that it is false that A+B is not equal to C?"
+# ---------------------------------------------------------------------------
+
+seen_neg_arith: set[tuple] = set()
+while len(seen_neg_arith) < 100:
+    a = rng.randint(2, 60)
+    b = rng.randint(2, 60)
+    key = (min(a, b), max(a, b))
+    if key in seen_neg_arith:
+        continue
+    seen_neg_arith.add(key)
+    c = a + b
+    groups.append({
+        "category": "negation_arithmetic",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {a} plus {b} equal to {c}?",
+            f"Is it false that {a} plus {b} is not equal to {c}?",
+            f"Is it not the case that it is false that {a} plus {b} equals {c}?",
+            f"Is it false that it is not the case that it is false that {a} plus {b} is not equal to {c}?",
+        ],
+        "expected": "yes",
+    })
+
+seen_neg_arith_no: set[tuple] = set()
+while len(seen_neg_arith_no) < 50:
+    a = rng.randint(2, 60)
+    b = rng.randint(2, 60)
+    key = (min(a, b), max(a, b))
+    if key in seen_neg_arith_no or key in seen_neg_arith:
+        continue
+    seen_neg_arith_no.add(key)
+    c = a + b
+    wrong_c = c + rng.choice([-2, -1, 1, 2])
+    groups.append({
+        "category": "negation_arithmetic",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {a} plus {b} equal to {wrong_c}?",
+            f"Is it false that {a} plus {b} is not equal to {wrong_c}?",
+            f"Is it not the case that it is false that {a} plus {b} equals {wrong_c}?",
+            f"Is it false that it is not the case that it is false that {a} plus {b} is not equal to {wrong_c}?",
+        ],
+        "expected": "no",
+    })
+
+
+# ---------------------------------------------------------------------------
+# 19. Contrastive negation  (100 groups × 3 questions)
+#
+# Tests whether the model understands negation in contrastive contexts:
+#   "Is X the capital of Y, not Z?"  (affirmative with explicit contrast)
+#   "Is it X, not Z, that is the capital of Y?"
+#   "Is the capital of Y X rather than Z?"
+# All three mean the same thing given that X is the capital and Z is not.
+# ---------------------------------------------------------------------------
+
+shuffled_for_contrast = CAPITALS[:]
+rng.shuffle(shuffled_for_contrast)
+contrast_pairs: list[tuple[str, str, str]] = []
+for country, capital in CAPITALS[:100]:
+    for _, other_capital in shuffled_for_contrast:
+        if other_capital != capital:
+            contrast_pairs.append((country, capital, other_capital))
+            break
+
+for country, capital, other_capital in contrast_pairs[:100]:
+    groups.append({
+        "category": "contrastive_negation",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {capital}, not {other_capital}, the capital of {country}?",
+            f"Is it {capital}, not {other_capital}, that is the capital of {country}?",
+            f"Is the capital of {country} {capital} rather than {other_capital}?",
+        ],
+        "expected": "yes",
+    })
+
+
+# ---------------------------------------------------------------------------
 # Summary and output
 # ---------------------------------------------------------------------------
 
