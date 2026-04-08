@@ -106,21 +106,26 @@ def build_training_examples(
 
     double_negation_groups = [g for g in all_groups if g["category"] == "double_negation"]
     negation_depth_groups  = [g for g in all_groups if g["category"] == "negation_depth"]
-    print(f"Found {len(double_negation_groups)} double_negation groups, "
+
+    # Split yes/no groups separately to keep balance in train and held-out sets
+    yes_groups = [g for g in double_negation_groups if g["expected"] == "yes"]
+    no_groups  = [g for g in double_negation_groups if g["expected"] == "no"]
+    print(f"Found {len(double_negation_groups)} double_negation groups "
+          f"({len(yes_groups)} yes, {len(no_groups)} no), "
           f"{len(negation_depth_groups)} negation_depth groups")
 
-    train_groups    = double_negation_groups[:train_size]
-    held_out_double = double_negation_groups[train_size:]
-    # negation_depth groups share the same ordering of capital facts —
-    # take the same held-out slice for a fully unseen fact evaluation
+    train_groups    = yes_groups[:train_size] + no_groups[:train_size]
+    held_out_double = yes_groups[train_size:] + no_groups[train_size:]
+    # negation_depth groups are all positive (yes); take the same held-out
+    # slice to evaluate depth-3/4 generalisation on unseen facts
     held_out_depth  = negation_depth_groups[train_size:]
     held_out_groups = held_out_double + held_out_depth
 
     print(f"Train: {len(train_groups)} double_negation groups "
-          f"({train_size} facts)")
+          f"({train_size} yes + {train_size} no facts)")
     print(f"Held-out: {len(held_out_double)} double_negation + "
           f"{len(held_out_depth)} negation_depth groups "
-          f"({len(double_negation_groups) - train_size} facts)")
+          f"({len(yes_groups) - train_size} facts each)")
 
     yes_token_id = tokenizer.encode("Yes", add_special_tokens=False)[0]
     no_token_id  = tokenizer.encode("No",  add_special_tokens=False)[0]

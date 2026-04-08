@@ -831,6 +831,19 @@ for country, capital in CAPITALS[:100]:
         "expected": "yes",
     })
 
+# Wrong capitals — expected "no" (all three questions should agree on "no")
+for country, _correct_capital, wrong_capital in wrong_capital_pairs[:100]:
+    groups.append({
+        "category": "double_negation",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {wrong_capital} the capital of {country}?",
+            f"Is it false that {wrong_capital} is not the capital of {country}?",
+            f"Is it not the case that {wrong_capital} is not the capital of {country}?",
+        ],
+        "expected": "no",
+    })
+
 
 # ---------------------------------------------------------------------------
 # 16. Comparison convoluted  (150 yes + 75 no groups × 4 questions)
