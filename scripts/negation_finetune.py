@@ -51,7 +51,6 @@ from torch.utils.data import Dataset
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    DataCollatorWithPadding,
     Trainer,
     TrainingArguments,
 )
@@ -209,6 +208,60 @@ def collate_fn(batch: list[dict]) -> dict:
 # Evaluation
 # ---------------------------------------------------------------------------
 
+def report_per_depth_accuracy(results_path: str) -> None:
+    """
+    For negation_depth groups: report accuracy at each depth position.
+
+    negation_depth groups have 4 questions at depths 1-4. For a true fact
+    (expected="yes"), the correct answers are [Yes, Yes, No, Yes] — depth-3
+    inverts because ¬¬¬P = ¬P. CR is meaningless here (a perfect model would
+    have CR>0), so we report per-depth accuracy instead.
+    """
+    with open(results_path, encoding="utf-8") as results_file:
+        results = json.load(results_file)
+
+    depth_results = [r for r in results if r["category"] == "negation_depth"]
+    if not depth_results:
+        return
+
+    # Correct answer at each depth for expected="yes" groups:
+    # depth 1: yes, depth 2: yes, depth 3: no (¬¬¬P = ¬P), depth 4: yes
+    correct_at_depth = {0: "yes", 1: "yes", 2: "no", 3: "yes"}
+
+    depth_correct = [0, 0, 0, 0]
+    depth_total   = [0, 0, 0, 0]
+
+    for result in depth_results:
+        answers  = result["metrics"]["answers"]
+        expected = result["expected"]
+        for depth_index, answer in enumerate(answers):
+            if depth_index >= 4:
+                continue
+            # For expected="no" groups, flip the correct answer at each depth
+            if expected == "yes":
+                correct = correct_at_depth[depth_index]
+            else:
+                correct = "no" if correct_at_depth[depth_index] == "yes" else "yes"
+            depth_total[depth_index] += 1
+            if answer == correct:
+                depth_correct[depth_index] += 1
+
+    print()
+    print("=" * 50)
+    print(f"Per-depth accuracy — negation_depth (n={len(depth_results)} groups)")
+    print("=" * 50)
+    print(f"  {'Depth':<10} {'Correct answer':<18} {'Accuracy':>8}")
+    print(f"  {'-'*10} {'-'*18} {'-'*8}")
+    depth_labels    = ["depth-1 (P)", "depth-2 (¬¬P)", "depth-3 (¬¬¬P)", "depth-4 (¬⁴P)"]
+    correct_answers = ["yes", "yes", "no", "yes"]
+    for depth_index in range(4):
+        total   = depth_total[depth_index]
+        correct = depth_correct[depth_index]
+        acc     = correct / total if total > 0 else 0.0
+        print(f"  {depth_labels[depth_index]:<10} {correct_answers[depth_index]:<18} {acc:>8.3f}  ({correct}/{total})")
+    print()
+
+
 def run_evaluation(
     model_path: str,
     held_out_groups: list[dict],
@@ -220,6 +273,9 @@ def run_evaluation(
     Saves held-out groups to a temporary JSON file and passes it to hf_ss_test.py.
     held_out_groups contains both double_negation and negation_depth groups
     for the same unseen capital facts.
+
+    For double_negation: reports CR (all phrasings should give same answer).
+    For negation_depth: reports per-depth accuracy (CR is not meaningful here).
     """
     held_out_path = Path(output_dir) / "held_out_pairs.json"
     with open(held_out_path, "w", encoding="utf-8") as held_out_file:
@@ -235,7 +291,9 @@ def run_evaluation(
     ]
     print(f"\nRunning held-out evaluation ({len(held_out_groups)} groups): {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
-    print(f"\nHeld-out results saved to {output_path}")
+
+    report_per_depth_accuracy(str(output_path))
+    print(f"Held-out results saved to {output_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -295,12 +353,24 @@ def main() -> None:
     print(f"Loading {args.model}...")
     if args.load_in_8bit:
         from transformers import BitsAndBytesConfig
+        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
         quantization_config = BitsAndBytesConfig(load_in_8bit=True)
         model = AutoModelForCausalLM.from_pretrained(
             args.model,
             quantization_config=quantization_config,
             device_map="auto",
         )
+        model = prepare_model_for_kbit_training(model)
+        lora_config = LoraConfig(
+            r=16,
+            lora_alpha=32,
+            target_modules=["q_proj", "v_proj"],
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
     else:
         model = AutoModelForCausalLM.from_pretrained(args.model)
         model = model.to(device)
