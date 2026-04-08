@@ -310,7 +310,7 @@ def main() -> None:
         lr_scheduler_type="cosine",
         logging_steps=10,
         save_strategy="epoch",
-        fp16=torch.cuda.is_available(),
+        bf16=torch.cuda.is_available(),
         report_to="none",
         dataloader_pin_memory=False,
     )
