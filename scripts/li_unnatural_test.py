@@ -177,6 +177,23 @@ def top1_position(probs: torch.Tensor) -> int:
     return -1
 
 
+def ranks_of_positions(probs: torch.Tensor, positions: set[int]) -> list[int]:
+    """
+    Return the 1-based rank of each board position in `positions` within the
+    probability distribution. Rank 1 = highest probability token.
+    Positions not in the vocab are ignored.
+    """
+    sorted_tokens = probs.argsort(descending=True).tolist()
+    rank_map: dict[int, int] = {}
+    rank = 1
+    for token in sorted_tokens:
+        if token in itos:
+            board_pos = int(itos[token])
+            rank_map[board_pos] = rank
+            rank += 1
+    return [rank_map[pos] for pos in positions if pos in rank_map]
+
+
 # ---------------------------------------------------------------------------
 # Li's gradient descent intervention (unchanged from natural benchmark)
 # ---------------------------------------------------------------------------
@@ -340,12 +357,17 @@ def analyse_position(
         return None
 
     legal_overlap = len(source_legal_set & target_legal_set) / len(target_legal_set)
+    unique_to_target = target_legal_set - source_legal_set
+    only_in_source   = source_legal_set - target_legal_set
 
     x = encode_sequence_from_positions(history, device)
     probs_original = get_probs_original(model, x, len(history))
 
     original_vs_source = topn_errors(probs_original, source_legal_set)
     original_vs_target = topn_errors(probs_original, target_legal_set)
+
+    ranks_before_unique      = ranks_of_positions(probs_original, unique_to_target)
+    ranks_only_source_before = ranks_of_positions(probs_original, only_in_source)
 
     labels_current = board_to_li(board).to(device)
 
@@ -357,6 +379,9 @@ def analyse_position(
 
     intervened_vs_target = topn_errors(probs_intervened, target_legal_set)
     intervened_vs_source = topn_errors(probs_intervened, source_legal_set)
+
+    ranks_after_unique      = ranks_of_positions(probs_intervened, unique_to_target)
+    ranks_only_source_after = ranks_of_positions(probs_intervened, only_in_source)
 
     m_star = top1_position(probs_intervened)
     m_star_legal_source     = m_star in source_legal_set
@@ -384,19 +409,45 @@ def analyse_position(
         if baseline_results:
             baseline_illegal_rate = 1.0 - float(np.mean(baseline_results))
 
+    forced_unique_rollout_illegal_rate = None
+    if unique_to_target and len(history) < BLOCK_SIZE - 1:
+        best_unique_move = min(
+            unique_to_target,
+            key=lambda pos: ranks_of_positions(probs_intervened, {pos})[0]
+            if ranks_of_positions(probs_intervened, {pos}) else 999,
+        )
+        try:
+            forced_board  = apply_move(target_board, best_unique_move, next_player)
+            forced_player = 3 - next_player
+            if not legal_moves(forced_board, forced_player):
+                forced_player = 3 - forced_player
+            forced_seq     = history + [best_unique_move]
+            forced_results = rollout(model, forced_seq, forced_board, forced_player, n_rollout, device)
+            if forced_results:
+                forced_unique_rollout_illegal_rate = 1.0 - float(np.mean(forced_results))
+        except ValueError:
+            pass
+
     return {
-        "n_legal_source":          len(source_legal_set),
-        "n_legal_target":          len(target_legal_set),
-        "legal_overlap":           legal_overlap,
-        "original_vs_source":      original_vs_source,
-        "original_vs_target":      original_vs_target,
-        "intervened_vs_target":    intervened_vs_target,
-        "intervened_vs_source":    intervened_vs_source,
-        "m_star_legal_source":     m_star_legal_source,
-        "m_star_legal_target":     m_star_legal_target,
-        "m_star_unique_to_target": m_star_unique_to_target,
-        "rollout_illegal_rate":    rollout_illegal_rate,
-        "baseline_illegal_rate":   baseline_illegal_rate,
+        "n_legal_source":                        len(source_legal_set),
+        "n_legal_target":                        len(target_legal_set),
+        "n_unique_to_target":                    len(unique_to_target),
+        "n_only_in_source":                      len(only_in_source),
+        "legal_overlap":                         legal_overlap,
+        "original_vs_source":                    original_vs_source,
+        "original_vs_target":                    original_vs_target,
+        "intervened_vs_target":                  intervened_vs_target,
+        "intervened_vs_source":                  intervened_vs_source,
+        "m_star_legal_source":                   m_star_legal_source,
+        "m_star_legal_target":                   m_star_legal_target,
+        "m_star_unique_to_target":               m_star_unique_to_target,
+        "ranks_before_unique":                   ranks_before_unique,
+        "ranks_after_unique":                    ranks_after_unique,
+        "ranks_only_source_before":              ranks_only_source_before,
+        "ranks_only_source_after":               ranks_only_source_after,
+        "rollout_illegal_rate":                  rollout_illegal_rate,
+        "baseline_illegal_rate":                 baseline_illegal_rate,
+        "forced_unique_rollout_illegal_rate":     forced_unique_rollout_illegal_rate,
     }
 
 
@@ -436,6 +487,33 @@ def report(all_results: list[dict], layer_start: int, layer_end: int, n_rollout:
     print(f"  Model drift away from B:           {drift:.3f} / {max_improvement:.3f} "
           f"= {100*drift/max_improvement:.1f}% of maximum")
 
+    all_ranks_before         = [rank for r in all_results for rank in r["ranks_before_unique"]]
+    all_ranks_after          = [rank for r in all_results for rank in r["ranks_after_unique"]]
+    all_ranks_source_before  = [rank for r in all_results for rank in r["ranks_only_source_before"]]
+    all_ranks_source_after   = [rank for r in all_results for rank in r["ranks_only_source_after"]]
+    has_unique      = [r for r in all_results if r["n_unique_to_target"] > 0]
+    has_only_source = [r for r in all_results if r["n_only_in_source"]   > 0]
+
+    print("\n" + "=" * 80)
+    print("Rank of unique-to-B' moves in model output")
+    print("=" * 80)
+    print(f"\n  Positions with at least one unique-to-B' move: {len(has_unique)}/{n}")
+    if all_ranks_before:
+        print(f"  mean rank before intervention: {np.mean(all_ranks_before):.1f}  (median {np.median(all_ranks_before):.0f})")
+        print(f"  mean rank after  intervention: {np.mean(all_ranks_after):.1f}  (median {np.median(all_ranks_after):.0f})")
+        rank_improvement = np.mean(all_ranks_before) - np.mean(all_ranks_after)
+        print(f"  mean rank improvement (before − after): {rank_improvement:.1f}  (positive = moved up)")
+
+    print("\n" + "=" * 80)
+    print("Rank of B-legal-but-B'-illegal moves (should be pushed DOWN)")
+    print("=" * 80)
+    print(f"\n  Positions with at least one B-only move: {len(has_only_source)}/{n}")
+    if all_ranks_source_before:
+        print(f"  mean rank before intervention: {np.mean(all_ranks_source_before):.1f}  (median {np.median(all_ranks_source_before):.0f})")
+        print(f"  mean rank after  intervention: {np.mean(all_ranks_source_after):.1f}  (median {np.median(all_ranks_source_after):.0f})")
+        rank_drop = np.mean(all_ranks_source_after) - np.mean(all_ranks_source_before)
+        print(f"  mean rank drop (after − before): {rank_drop:.1f}  (positive = pushed down)")
+
     print("\n" + "=" * 80)
     print(f"Rollout persistence  ({n_rollout} steps)")
     print("=" * 80)
@@ -444,16 +522,19 @@ def report(all_results: list[dict], layer_start: int, layer_end: int, n_rollout:
     all_with_rollout    = [r for r in all_results if r["rollout_illegal_rate"]  is not None]
     unique_to_target    = [r for r in all_results if r["m_star_unique_to_target"]]
     unique_with_rollout = [r for r in unique_to_target if r["rollout_illegal_rate"] is not None]
+    forced_entries      = [r for r in all_results if r["forced_unique_rollout_illegal_rate"] is not None]
 
     frac_unique       = len(unique_to_target) / n if n else 0.0
     baseline_rate     = np.mean([r["baseline_illegal_rate"] for r in baseline_entries]) if baseline_entries else float("nan")
     rollout_rate_all  = np.mean([r["rollout_illegal_rate"]  for r in all_with_rollout]) if all_with_rollout else float("nan")
     rollout_rate_uniq = np.mean([r["rollout_illegal_rate"]  for r in unique_with_rollout]) if unique_with_rollout else float("nan")
+    forced_rate       = np.mean([r["forced_unique_rollout_illegal_rate"] for r in forced_entries]) if forced_entries else float("nan")
 
     print(f"\n  m* unique to B′: {len(unique_to_target)}/{n} positions ({100*frac_unique:.1f}%)")
-    print(f"\n  {'Baseline illegal rate (no intervention)':.<45} {100*baseline_rate:.1f}%  (n={len(baseline_entries)})")
-    print(f"  {'Rollout illegal rate (m* legal for B′)':.<45} {100*rollout_rate_all:.1f}%  (n={len(all_with_rollout)})")
-    print(f"  {'Rollout illegal rate (m* unique to B′ only)':.<45} {100*rollout_rate_uniq:.1f}%  (n={len(unique_with_rollout)})")
+    print(f"\n  {'Baseline illegal rate (no intervention)':.<50} {100*baseline_rate:.1f}%  (n={len(baseline_entries)})")
+    print(f"  {'Rollout illegal rate (m* legal for B′)':.<50} {100*rollout_rate_all:.1f}%  (n={len(all_with_rollout)})")
+    print(f"  {'Rollout illegal rate (m* unique to B′ only)':.<50} {100*rollout_rate_uniq:.1f}%  (n={len(unique_with_rollout)})")
+    print(f"  {'Forced unique-to-B′ move rollout illegal rate':.<50} {100*forced_rate:.1f}%  (n={len(forced_entries)})")
     print()
 
 
