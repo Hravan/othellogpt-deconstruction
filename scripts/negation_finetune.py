@@ -316,12 +316,18 @@ def parse_args() -> argparse.Namespace:
                         help="Load base model in 8-bit quantization")
     parser.add_argument("--no-eval", action="store_true",
                         help="Skip evaluation after training")
+    parser.add_argument("--report", default=None,
+                        help="Skip training; just report accuracy from this results JSON path")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     train_depths = [int(depth_str) for depth_str in args.train_depths.split(",")]
+
+    if args.report:
+        report_per_depth_accuracy(args.report, train_depths)
+        return
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device:       {device}")
