@@ -122,6 +122,15 @@ def tv_distance(dist_a: torch.Tensor, dist_b: torch.Tensor) -> float:
     return 0.5 * (dist_a - dist_b).abs().sum().item()
 
 
+def cr_max(n: int) -> float:
+    """Maximum possible CR for a group of n questions with binary answers."""
+    if n < 2:
+        return 1.0
+    pairs = n * (n - 1) / 2
+    max_disagreeing_pairs = (n // 2) * ((n + 1) // 2)
+    return max_disagreeing_pairs / pairs
+
+
 def top1_answer(dist: torch.Tensor, tokenizer, answer_type: str) -> str:
     top_token = tokenizer.decode([dist.argmax().item()]).strip()
     if answer_type == "word":
@@ -177,7 +186,10 @@ def print_report(results: list[dict], model_name: str) -> None:
         return
 
     all_ss = [r["metrics"]["ss"] for r in results]
-    all_cr = [r["metrics"]["cr"] for r in results]
+    all_cr_norm = [
+        r["metrics"]["cr"] / cr_max(len(r["questions"]))
+        for r in results
+    ]
     col = 30
 
     print()
@@ -186,18 +198,22 @@ def print_report(results: list[dict], model_name: str) -> None:
     print("=" * 70)
     print(f"\n  {'SS  (mean TV distance)':.<{col}} {sum(all_ss) / len(all_ss):.4f}")
     print(f"  {'SSS (1 - SS)':.<{col}} {1 - sum(all_ss) / len(all_ss):.4f}")
-    print(f"  {'CR  (contradiction rate)':.<{col}} {sum(all_cr) / len(all_cr):.4f}")
+    print(f"  {'CR  (normalized)':.<{col}} {sum(all_cr_norm) / len(all_cr_norm):.4f}")
 
     by_category: dict[str, list] = defaultdict(list)
     for result in results:
-        by_category[result["category"]].append(result["metrics"])
+        n_questions = len(result["questions"])
+        by_category[result["category"]].append({
+            "ss":      result["metrics"]["ss"],
+            "cr_norm": result["metrics"]["cr"] / cr_max(n_questions),
+        })
 
     print(f"\n  {'Category':<30}  {'n':>5}  {'SS':>6}  {'SSS':>6}  {'CR':>6}")
     print(f"  {'-'*30}  {'-'*5}  {'-'*6}  {'-'*6}  {'-'*6}")
     for category in sorted(by_category):
         category_metrics = by_category[category]
         ss_cat = sum(m["ss"] for m in category_metrics) / len(category_metrics)
-        cr_cat = sum(m["cr"] for m in category_metrics) / len(category_metrics)
+        cr_cat = sum(m["cr_norm"] for m in category_metrics) / len(category_metrics)
         print(f"  {category:<30}  {len(category_metrics):>5}  {ss_cat:>6.4f}  {1-ss_cat:>6.4f}  {cr_cat:>6.4f}")
 
     print()
