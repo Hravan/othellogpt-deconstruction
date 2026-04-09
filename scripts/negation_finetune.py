@@ -1,43 +1,33 @@
 """
 scripts/negation_finetune.py
 
-Fine-tune an instruct model on depth-2 double negation examples, then evaluate
-SS/CR at all negation depths to test whether the fix generalises.
+Fine-tune an instruct model on negation examples up to depth N, then evaluate
+accuracy at all depths to test whether the fix generalises.
 
-Hypothesis: fine-tuning on depth-2 (¬¬P ↔ P) reduces CR at depth-2 but leaves
-depth-3 and depth-4 unchanged — evidence of surface pattern learning, not rule
+Hypothesis: fine-tuning on depths 0..N reduces errors at those depths but leaves
+depth N+1 and N+2 unchanged — evidence of surface pattern learning, not rule
 internalization.
 
-Training data: first --train-size double_negation groups from ss_pairs.json.
-  - questions[0]: depth-1 (direct question)  — NOT used for training by default
-  - questions[1]: depth-2 phrasing 1          — trained with correct answer
-  - questions[2]: depth-2 phrasing 2          — trained with correct answer
+Training data: negation_depth_0 through negation_depth_N groups from ss_pairs.json.
+  Each group has 3 phrasings at exactly the same negation depth.
+  All phrasings are used for training.
 
-Held-out evaluation: the remaining double_negation and negation_depth groups
-(same held-out capital facts, so depth-2 eval uses facts never seen in training).
+Held-out evaluation: the last 20 capital facts across all depth categories.
+  (Same 20 facts are held out from every depth, so no capital-level leakage.)
 
-Train/eval split rationale:
-  Both double_negation and negation_depth use the same 100 capital facts.
-  Training on the first 80 double_negation groups, evaluating on the last 20
-  ensures: (a) depth-2 eval uses new facts, (b) depth-3/4 eval uses new facts.
-  This rules out memorization of specific question-answer pairs.
+Three planned experiments:
+  --train-depths 0,1,2   → test depths 3,4  (trained on no/one/double negation)
+  --train-depths 0,1,2,3 → test depths 4,5
+  --train-depths 0,1,2,3,4 → test depths 5,6
 
 Usage
 -----
-    # Train on depth-2 only (default), evaluate after
-    uv run python scripts/negation_finetune.py
-
-    # Larger model, more epochs
+    uv run python scripts/negation_finetune.py --train-depths 0,1,2
     uv run python scripts/negation_finetune.py \\
+        --train-depths 0,1,2,3 \\
         --model Qwen/Qwen2-7B-Instruct \\
         --epochs 5 \\
-        --output-dir ckpts/negation_finetuned_7b
-
-    # Also include depth-1 in training (control condition)
-    uv run python scripts/negation_finetune.py --include-depth-1
-
-    # Skip evaluation after training
-    uv run python scripts/negation_finetune.py --no-eval
+        --output-dir ckpts/negation_finetuned_0123
 """
 
 import argparse
@@ -60,17 +50,28 @@ SYSTEM_PROMPT = (
     "Do not add any explanation."
 )
 
+# Correct answer for each negation depth for expected="yes" (correct capital) groups.
+# Even depths → yes (¬²ᵏP = P), odd depths → no (¬²ᵏ⁺¹P = ¬P).
+CORRECT_ANSWER_AT_DEPTH = {
+    0: "yes", 1: "no", 2: "yes", 3: "no", 4: "yes", 5: "no", 6: "yes",
+}
+
+DEPTH_LABELS = [
+    "depth-0 (P)",
+    "depth-1 (¬P)",
+    "depth-2 (¬²P)",
+    "depth-3 (¬³P)",
+    "depth-4 (¬⁴P)",
+    "depth-5 (¬⁵P)",
+    "depth-6 (¬⁶P)",
+]
+
 
 # ---------------------------------------------------------------------------
 # Dataset
 # ---------------------------------------------------------------------------
 
 class NegationDataset(Dataset):
-    """
-    Each example is a (prompt, answer_token_id) pair.
-    Loss is computed only on the answer token.
-    """
-
     def __init__(self, examples: list[dict]):
         self.examples = examples
 
@@ -84,91 +85,94 @@ class NegationDataset(Dataset):
 def build_training_examples(
     pairs_path: str,
     tokenizer,
+    train_depths: list[int],
     train_size: int = 80,
-    include_depth_1: bool = False,
 ) -> tuple[list[dict], list[dict]]:
     """
-    Build tokenized training examples from the first train_size double_negation groups.
+    Build tokenized training examples from negation_depth_N groups.
+
     Returns (training_examples, held_out_groups).
 
-    held_out_groups contains the remaining double_negation and negation_depth groups
-    sharing the same held-out capital facts — used for evaluation after training.
+    Training groups: first train_size groups from each negation_depth_N category
+    for N in train_depths. All 3 phrasings per group are used.
 
-    Each training example contributes:
-      - questions[1] and questions[2] (depth-2 phrasings) always
-      - questions[0] (depth-1) only if include_depth_1=True
+    Held-out groups: the remaining groups (last 100-train_size per category)
+    across ALL depth categories (0..6), for evaluation.
 
-    Labels: -100 for all tokens except the final answer token.
+    The same capital facts are held out from every depth category, so there is
+    no capital-level leakage between train and test.
     """
     with open(pairs_path, encoding="utf-8") as pairs_file:
         all_groups = json.load(pairs_file)
 
-    double_negation_groups = [g for g in all_groups if g["category"] == "double_negation"]
-    negation_depth_groups  = [g for g in all_groups if g["category"] == "negation_depth"]
+    # Collect negation_depth_N groups (0..6) from the pairs file
+    depth_groups: dict[int, list[dict]] = {depth: [] for depth in range(7)}
+    for group in all_groups:
+        category = group["category"]
+        if category.startswith("negation_depth_"):
+            try:
+                depth = int(category.split("_")[-1])
+                if depth in depth_groups:
+                    depth_groups[depth].append(group)
+            except ValueError:
+                pass
 
-    # Split yes/no groups separately to keep balance in train and held-out sets
-    yes_groups = [g for g in double_negation_groups if g["expected"] == "yes"]
-    no_groups  = [g for g in double_negation_groups if g["expected"] == "no"]
-    print(f"Found {len(double_negation_groups)} double_negation groups "
-          f"({len(yes_groups)} yes, {len(no_groups)} no), "
-          f"{len(negation_depth_groups)} negation_depth groups")
-
-    train_groups    = yes_groups[:train_size] + no_groups[:train_size]
-    held_out_double = yes_groups[train_size:] + no_groups[train_size:]
-    # negation_depth groups are all positive (yes); take the same held-out
-    # slice to evaluate depth-3/4 generalisation on unseen facts
-    held_out_depth  = negation_depth_groups[train_size:]
-    held_out_groups = held_out_double + held_out_depth
-
-    print(f"Train: {len(train_groups)} double_negation groups "
-          f"({train_size} yes + {train_size} no facts)")
-    print(f"Held-out: {len(held_out_double)} double_negation + "
-          f"{len(held_out_depth)} negation_depth groups "
-          f"({len(yes_groups) - train_size} facts each)")
+    for depth, depth_group_list in depth_groups.items():
+        print(f"  negation_depth_{depth}: {len(depth_group_list)} groups")
 
     yes_token_id = tokenizer.encode("Yes", add_special_tokens=False)[0]
     no_token_id  = tokenizer.encode("No",  add_special_tokens=False)[0]
 
-    examples = []
-    for group in train_groups:
-        questions = group["questions"]
-        expected  = group["expected"]
-        answer_token_id = yes_token_id if expected == "yes" else no_token_id
+    training_examples: list[dict] = []
+    held_out_groups: list[dict] = []
 
-        training_indices = [1, 2]
-        if include_depth_1:
-            training_indices = [0, 1, 2]
+    for depth in range(7):
+        groups_at_depth = depth_groups[depth]
+        train_groups  = groups_at_depth[:train_size]
+        held_out_part = groups_at_depth[train_size:]
+        held_out_groups.extend(held_out_part)
 
-        for question_index in training_indices:
-            question = questions[question_index]
+        if depth not in train_depths:
+            continue
 
-            messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": question},
-            ]
-            prompt = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
+        for group in train_groups:
+            expected        = group["expected"]
+            answer_token_id = yes_token_id if expected == "yes" else no_token_id
 
-            encoding = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
-            input_ids = encoding["input_ids"][0]
-            attention_mask = encoding["attention_mask"][0]
+            for question in group["questions"]:
+                messages = [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": question},
+                ]
+                prompt = tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
 
-            answer_tensor = torch.tensor([answer_token_id])
-            input_ids_with_answer = torch.cat([input_ids, answer_tensor])
-            attention_mask_with_answer = torch.cat([attention_mask, torch.ones(1, dtype=torch.long)])
+                encoding = tokenizer(
+                    prompt, return_tensors="pt", truncation=True, max_length=512
+                )
+                input_ids      = encoding["input_ids"][0]
+                attention_mask = encoding["attention_mask"][0]
 
-            labels = torch.full_like(input_ids_with_answer, fill_value=-100)
-            labels[-1] = answer_token_id
+                answer_tensor              = torch.tensor([answer_token_id])
+                input_ids_with_answer      = torch.cat([input_ids, answer_tensor])
+                attention_mask_with_answer = torch.cat(
+                    [attention_mask, torch.ones(1, dtype=torch.long)]
+                )
 
-            examples.append({
-                "input_ids":      input_ids_with_answer,
-                "attention_mask": attention_mask_with_answer,
-                "labels":         labels,
-            })
+                labels        = torch.full_like(input_ids_with_answer, fill_value=-100)
+                labels[-1]    = answer_token_id
 
-    print(f"Built {len(examples)} training examples")
-    return examples, held_out_groups
+                training_examples.append({
+                    "input_ids":      input_ids_with_answer,
+                    "attention_mask": attention_mask_with_answer,
+                    "labels":         labels,
+                })
+
+    print(f"Built {len(training_examples)} training examples "
+          f"from depths {train_depths} ({train_size} groups each)")
+    print(f"Held-out: {len(held_out_groups)} groups across all depths")
+    return training_examples, held_out_groups
 
 
 # ---------------------------------------------------------------------------
@@ -176,25 +180,27 @@ def build_training_examples(
 # ---------------------------------------------------------------------------
 
 def collate_fn(batch: list[dict]) -> dict:
-    """Pad input_ids, attention_mask, and labels to the longest sequence in the batch."""
     max_length = max(example["input_ids"].shape[0] for example in batch)
 
-    padded_input_ids      = []
+    padded_input_ids       = []
     padded_attention_masks = []
-    padded_labels         = []
+    padded_labels          = []
 
     for example in batch:
         sequence_length = example["input_ids"].shape[0]
         padding_length  = max_length - sequence_length
 
         padded_input_ids.append(
-            torch.cat([example["input_ids"], torch.zeros(padding_length, dtype=torch.long)])
+            torch.cat([example["input_ids"],
+                       torch.zeros(padding_length, dtype=torch.long)])
         )
         padded_attention_masks.append(
-            torch.cat([example["attention_mask"], torch.zeros(padding_length, dtype=torch.long)])
+            torch.cat([example["attention_mask"],
+                       torch.zeros(padding_length, dtype=torch.long)])
         )
         padded_labels.append(
-            torch.cat([example["labels"], torch.full((padding_length,), -100, dtype=torch.long)])
+            torch.cat([example["labels"],
+                       torch.full((padding_length,), -100, dtype=torch.long)])
         )
 
     return {
@@ -208,57 +214,48 @@ def collate_fn(batch: list[dict]) -> dict:
 # Evaluation
 # ---------------------------------------------------------------------------
 
-def report_per_depth_accuracy(results_path: str) -> None:
+def report_per_depth_accuracy(results_path: str, train_depths: list[int]) -> None:
     """
-    For negation_depth groups: report accuracy at each depth position.
+    For each negation_depth_N category in results_path, compute accuracy
+    and report whether each depth was in the training set or held out.
 
-    negation_depth groups have 4 questions at depths 1-4. For a true fact
-    (expected="yes"), the correct answers are [Yes, Yes, No, Yes] — depth-3
-    inverts because ¬¬¬P = ¬P. CR is meaningless here (a perfect model would
-    have CR>0), so we report per-depth accuracy instead.
+    A model that has internalized the negation rule should achieve high accuracy
+    on held-out depths. A model that learned surface patterns will fail at
+    depths not seen during training.
     """
     with open(results_path, encoding="utf-8") as results_file:
         results = json.load(results_file)
 
-    depth_results = [r for r in results if r["category"] == "negation_depth"]
-    if not depth_results:
-        return
-
-    # Correct answer at each depth for expected="yes" groups:
-    # depth 1: yes, depth 2: yes, depth 3: no (¬¬¬P = ¬P), depth 4: yes
-    correct_at_depth = {0: "yes", 1: "yes", 2: "no", 3: "yes"}
-
-    depth_correct = [0, 0, 0, 0]
-    depth_total   = [0, 0, 0, 0]
-
-    for result in depth_results:
-        answers  = result["metrics"]["answers"]
-        expected = result["expected"]
-        for depth_index, answer in enumerate(answers):
-            if depth_index >= 4:
-                continue
-            # For expected="no" groups, flip the correct answer at each depth
-            if expected == "yes":
-                correct = correct_at_depth[depth_index]
-            else:
-                correct = "no" if correct_at_depth[depth_index] == "yes" else "yes"
-            depth_total[depth_index] += 1
-            if answer == correct:
-                depth_correct[depth_index] += 1
-
     print()
-    print("=" * 50)
-    print(f"Per-depth accuracy — negation_depth (n={len(depth_results)} groups)")
-    print("=" * 50)
-    print(f"  {'Depth':<10} {'Correct answer':<18} {'Accuracy':>8}")
-    print(f"  {'-'*10} {'-'*18} {'-'*8}")
-    depth_labels    = ["depth-1 (P)", "depth-2 (¬¬P)", "depth-3 (¬¬¬P)", "depth-4 (¬⁴P)"]
-    correct_answers = ["yes", "yes", "no", "yes"]
-    for depth_index in range(4):
-        total   = depth_total[depth_index]
-        correct = depth_correct[depth_index]
-        acc     = correct / total if total > 0 else 0.0
-        print(f"  {depth_labels[depth_index]:<10} {correct_answers[depth_index]:<18} {acc:>8.3f}  ({correct}/{total})")
+    print("=" * 65)
+    print(f"Per-depth accuracy (train depths: {train_depths})")
+    print("=" * 65)
+    print(f"  {'Depth':<18} {'Expected':<10} {'Status':<8} {'Accuracy':>8}  (correct/total)")
+    print(f"  {'-'*18} {'-'*10} {'-'*8} {'-'*8}")
+
+    for depth in range(7):
+        depth_results = [
+            r for r in results
+            if r["category"] == f"negation_depth_{depth}"
+        ]
+        if not depth_results:
+            continue
+
+        expected_answer = CORRECT_ANSWER_AT_DEPTH[depth]
+        status = "TRAIN" if depth in train_depths else "TEST"
+
+        num_correct = 0
+        num_total   = 0
+        for result in depth_results:
+            for answer in result["metrics"]["answers"]:
+                num_total += 1
+                if answer.strip().lower() == expected_answer:
+                    num_correct += 1
+
+        accuracy = num_correct / num_total if num_total > 0 else 0.0
+        label    = DEPTH_LABELS[depth] if depth < len(DEPTH_LABELS) else f"depth-{depth}"
+        print(f"  {label:<18} {expected_answer:<10} {status:<8} {accuracy:>8.3f}  ({num_correct}/{num_total})")
+
     print()
 
 
@@ -266,16 +263,11 @@ def run_evaluation(
     model_path: str,
     held_out_groups: list[dict],
     output_dir: str,
+    train_depths: list[int],
 ) -> None:
     """
-    Evaluate the fine-tuned model on held-out groups only.
-
-    Saves held-out groups to a temporary JSON file and passes it to hf_ss_test.py.
-    held_out_groups contains both double_negation and negation_depth groups
-    for the same unseen capital facts.
-
-    For double_negation: reports CR (all phrasings should give same answer).
-    For negation_depth: reports per-depth accuracy (CR is not meaningful here).
+    Save held-out groups and evaluate the fine-tuned model via hf_ss_test.py.
+    Reports SS/CR per negation depth category plus per-question accuracy.
     """
     held_out_path = Path(output_dir) / "held_out_pairs.json"
     with open(held_out_path, "w", encoding="utf-8") as held_out_file:
@@ -284,15 +276,15 @@ def run_evaluation(
     output_path = Path(output_dir) / "eval_results_held_out.json"
     cmd = [
         sys.executable, "scripts/hf_ss_test.py",
-        "--model", model_path,
-        "--pairs", str(held_out_path),
+        "--model",    model_path,
+        "--pairs",    str(held_out_path),
         "--instruct",
-        "--output", str(output_path),
+        "--output",   str(output_path),
     ]
-    print(f"\nRunning held-out evaluation ({len(held_out_groups)} groups): {' '.join(cmd)}")
+    print(f"\nRunning evaluation ({len(held_out_groups)} groups): {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
 
-    report_per_depth_accuracy(str(output_path))
+    report_per_depth_accuracy(str(output_path), train_depths)
     print(f"Held-out results saved to {output_path}")
 
 
@@ -302,14 +294,16 @@ def run_evaluation(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Fine-tune a model on depth-2 negation, test generalization to depth-3/4."
+        description="Fine-tune a model on negation depths 0..N, test generalisation to N+1 and N+2."
     )
     parser.add_argument("--model", default="Qwen/Qwen2-1.5B-Instruct",
                         help="Base model (default: Qwen/Qwen2-1.5B-Instruct)")
     parser.add_argument("--pairs", default="data/ss_pairs.json",
                         help="ss_pairs.json path (default: data/ss_pairs.json)")
+    parser.add_argument("--train-depths", default="0,1,2",
+                        help="Comma-separated depth indices to train on (default: 0,1,2)")
     parser.add_argument("--output-dir", default="ckpts/negation_finetuned",
-                        help="Directory to save fine-tuned model (default: ckpts/negation_finetuned)")
+                        help="Directory to save fine-tuned model")
     parser.add_argument("--epochs", type=int, default=5,
                         help="Training epochs (default: 5)")
     parser.add_argument("--batch-size", type=int, default=8,
@@ -317,9 +311,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=2e-5,
                         help="Learning rate (default: 2e-5)")
     parser.add_argument("--train-size", type=int, default=80,
-                        help="Number of double_negation groups to train on (default: 80, held-out: remaining 20)")
-    parser.add_argument("--include-depth-1", action="store_true",
-                        help="Also train on depth-1 questions (control condition)")
+                        help="Groups per depth used for training; rest are held out (default: 80)")
     parser.add_argument("--load-in-8bit", action="store_true",
                         help="Load base model in 8-bit quantization")
     parser.add_argument("--no-eval", action="store_true",
@@ -329,28 +321,27 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    train_depths = [int(depth_str) for depth_str in args.train_depths.split(",")]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
-    print(f"Model: {args.model}")
-    print(f"Training depth-2 only: {not args.include_depth_1}")
+    print(f"Device:       {device}")
+    print(f"Model:        {args.model}")
+    print(f"Train depths: {train_depths}")
 
-    # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Build training data and held-out evaluation set
-    examples, held_out_groups = build_training_examples(
+    print("\nLoading groups...")
+    training_examples, held_out_groups = build_training_examples(
         pairs_path=args.pairs,
         tokenizer=tokenizer,
+        train_depths=train_depths,
         train_size=args.train_size,
-        include_depth_1=args.include_depth_1,
     )
-    dataset = NegationDataset(examples)
+    dataset = NegationDataset(training_examples)
 
-    # Load model
-    print(f"Loading {args.model}...")
+    print(f"\nLoading {args.model}...")
     if args.load_in_8bit:
         from transformers import BitsAndBytesConfig
         from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
@@ -375,8 +366,7 @@ def main() -> None:
         model = AutoModelForCausalLM.from_pretrained(args.model)
         model = model.to(device)
 
-    # Training arguments
-    training_args = TrainingArguments(
+    training_arguments = TrainingArguments(
         output_dir=args.output_dir,
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
@@ -392,7 +382,7 @@ def main() -> None:
 
     trainer = Trainer(
         model=model,
-        args=training_args,
+        args=training_arguments,
         train_dataset=dataset,
         data_collator=collate_fn,
         processing_class=tokenizer,
@@ -401,18 +391,17 @@ def main() -> None:
     print(f"\nTraining on {len(dataset)} examples for {args.epochs} epochs...")
     trainer.train()
 
-    # Save final model
     final_model_path = str(Path(args.output_dir) / "final")
     trainer.save_model(final_model_path)
     tokenizer.save_pretrained(final_model_path)
     print(f"\nModel saved to {final_model_path}")
 
-    # Evaluate on held-out groups
     if not args.no_eval:
         run_evaluation(
             model_path=final_model_path,
             held_out_groups=held_out_groups,
             output_dir=args.output_dir,
+            train_depths=train_depths,
         )
 
 

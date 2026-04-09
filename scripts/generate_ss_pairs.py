@@ -1112,17 +1112,18 @@ while len(seen_no_convoluted_comparisons) < 75:
 
 
 # ---------------------------------------------------------------------------
-# 17. Negation depth experiment  (100 groups × 4 questions, depths 1–4)
+# 17. Negation depth experiment  (100 groups × 4 questions, depths 0/2/3/4)
 #
 # Same capital facts as double_negation but extended to depth 3 and 4.
-# Each group has one question at each negation depth:
-#   depth 1: "Is X the capital of Y?"
-#   depth 2: "Is it false that X is not the capital of Y?"
-#   depth 3: "Is it not the case that it is false that X is the capital of Y?"
-#   depth 4: "Is it false that it is not the case that it is false that X is not the capital of Y?"
+# Each group has one question per negation depth (0, 2, 3, 4):
+#   depth 0: P                = "Is X the capital of Y?"                                           → yes
+#   depth 2: ¬¬P = P         = "Is it false that X is NOT the capital of Y?"                      → yes
+#   depth 3: ¬³P = ¬P        = "Is it not the case that it is false that X is NOT the capital of Y?" → no
+#   depth 4: ¬⁴P = P         = "Is it false that it is not the case that it is false that X is NOT the capital of Y?" → yes
 #
-# All four questions are logically equivalent (even depths → same as depth 1).
-# Tests whether the model generalises the negation rule across depths.
+# NOTE: CR is not meaningful here — a perfect model would have CR>0 because
+# depth-3 has a different answer than the others. Use per-depth accuracy
+# (see negation_finetune.py report_per_depth_accuracy) instead.
 # ---------------------------------------------------------------------------
 
 for country, capital in CAPITALS[:100]:
@@ -1132,7 +1133,7 @@ for country, capital in CAPITALS[:100]:
         "questions": [
             f"Is {capital} the capital of {country}?",
             f"Is it false that {capital} is not the capital of {country}?",
-            f"Is it not the case that it is false that {capital} is the capital of {country}?",
+            f"Is it not the case that it is false that {capital} is not the capital of {country}?",
             f"Is it false that it is not the case that it is false that {capital} is not the capital of {country}?",
         ],
         "expected": "yes",
@@ -1222,6 +1223,144 @@ for country, capital, other_capital in contrast_pairs[:100]:
             f"Is the capital of {country} {capital} rather than {other_capital}?",
         ],
         "expected": "yes",
+    })
+
+
+# ---------------------------------------------------------------------------
+# 20. Negation depth by fixed count  (100 groups × 3 questions each, depths 0–6)
+#
+# Each category contains 3 distinct phrasings at exactly N negation operators,
+# all logically equivalent (same answer). This allows SS/CR to be computed
+# within each negation depth, and provides training/test data for fine-tuning.
+#
+# Answer pattern for correct capitals (P = "X is the capital of Y"):
+#   depth 0: P      → yes   depth 1: ¬P     → no
+#   depth 2: ¬²P=P  → yes   depth 3: ¬³P=¬P → no
+#   depth 4: ¬⁴P=P  → yes   depth 5: ¬⁵P=¬P → no
+#   depth 6: ¬⁶P=P  → yes
+#
+# Negation operators used: "is not the case that", "is false that",
+# "is not true that", and embedded "is not the capital of".
+# ---------------------------------------------------------------------------
+
+for country, capital in CAPITALS[:100]:
+    groups.append({
+        "category": "negation_depth_0",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {capital} the capital of {country}?",
+            f"Does {capital} serve as the capital of {country}?",
+            f"Is {country}'s capital {capital}?",
+        ],
+        "expected": "yes",
+    })
+
+for country, capital in CAPITALS[:100]:
+    groups.append({
+        "category": "negation_depth_1",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is it not the case that {capital} is the capital of {country}?",
+            f"Is it false that {capital} is the capital of {country}?",
+            f"Is it not true that {capital} is the capital of {country}?",
+        ],
+        "expected": "no",
+    })
+
+for country, capital in CAPITALS[:100]:
+    groups.append({
+        "category": "negation_depth_2",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is it not the case that {capital} is not the capital of {country}?",
+            f"Is it false that {capital} is not the capital of {country}?",
+            f"Is it not the case that it is false that {capital} is the capital of {country}?",
+        ],
+        "expected": "yes",
+    })
+
+for country, capital in CAPITALS[:100]:
+    groups.append({
+        "category": "negation_depth_3",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is it not the case that it is false that {capital} is not the capital of {country}?",
+            f"Is it false that it is not the case that {capital} is not the capital of {country}?",
+            f"Is it not the case that it is not the case that {capital} is not the capital of {country}?",
+        ],
+        "expected": "no",
+    })
+
+for country, capital in CAPITALS[:100]:
+    groups.append({
+        "category": "negation_depth_4",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is it false that it is not the case that it is false that {capital} is not the capital of {country}?",
+            f"Is it not the case that it is false that it is not the case that {capital} is not the capital of {country}?",
+            f"Is it not the case that it is not the case that it is not the case that {capital} is not the capital of {country}?",
+        ],
+        "expected": "yes",
+    })
+
+for country, capital in CAPITALS[:100]:
+    groups.append({
+        "category": "negation_depth_5",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is it not the case that it is false that it is not the case that it is false that {capital} is not the capital of {country}?",
+            f"Is it false that it is not the case that it is false that it is not the case that {capital} is not the capital of {country}?",
+            f"Is it not the case that it is not the case that it is not the case that it is not the case that {capital} is not the capital of {country}?",
+        ],
+        "expected": "no",
+    })
+
+for country, capital in CAPITALS[:100]:
+    groups.append({
+        "category": "negation_depth_6",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is it false that it is not the case that it is false that it is not the case that it is false that {capital} is not the capital of {country}?",
+            f"Is it not the case that it is false that it is not the case that it is false that it is not the case that {capital} is not the capital of {country}?",
+            f"Is it not the case that it is not the case that it is not the case that it is not the case that it is not the case that {capital} is not the capital of {country}?",
+        ],
+        "expected": "yes",
+    })
+
+
+# ---------------------------------------------------------------------------
+# 21. Negation parity groups  (100 even + 100 odd groups × 4/3 questions)
+#
+# Tests cross-depth consistency within the same parity class.
+# negation_even: one phrasing per even depth (0,2,4,6), all answer "yes".
+# negation_odd:  one phrasing per odd depth  (1,3,5),   all answer "no".
+# A model that correctly applies the negation rule should have SS≈0 and CR=0
+# within each parity group — all phrasings are logically equivalent.
+# ---------------------------------------------------------------------------
+
+for country, capital in CAPITALS[:100]:
+    groups.append({
+        "category": "negation_even",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is {capital} the capital of {country}?",
+            f"Is it not the case that {capital} is not the capital of {country}?",
+            f"Is it false that it is not the case that it is false that {capital} is not the capital of {country}?",
+            f"Is it false that it is not the case that it is false that it is not the case that it is false that {capital} is not the capital of {country}?",
+        ],
+        "expected": "yes",
+    })
+
+for country, capital in CAPITALS[:100]:
+    groups.append({
+        "category": "negation_odd",
+        "answer_type": "yes_no",
+        "questions": [
+            f"Is it not the case that {capital} is the capital of {country}?",
+            f"Is it not the case that it is false that {capital} is not the capital of {country}?",
+            f"Is it not the case that it is false that it is not the case that it is false that {capital} is not the capital of {country}?",
+        ],
+        "expected": "no",
     })
 
 
