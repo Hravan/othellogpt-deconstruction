@@ -61,6 +61,9 @@ SYSTEM_PROMPT_WORD = (
 # ---------------------------------------------------------------------------
 
 def load_model(model_name: str, device: torch.device, load_in_8bit: bool = False):
+    local_path = Path(model_name)
+    if local_path.exists():
+        model_name = str(local_path.resolve())
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     if load_in_8bit:
         from transformers import BitsAndBytesConfig
