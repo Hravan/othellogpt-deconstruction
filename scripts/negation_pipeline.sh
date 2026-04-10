@@ -32,41 +32,47 @@ python scripts/negation_prepare.py \
 # eval_pairs.json contains held-out depth groups + all parity groups.
 # hf_ss_test.py --train-depths prints per-depth accuracy + parity SS/CR/accuracy.
 
-# ── Qwen 3B (full precision) ──────────────────────────────────────────────────
+# ── Qwen 3B (8-bit LoRA) ──────────────────────────────────────────────────────
 
 uv run python scripts/negation_train.py \
     --model        Qwen/Qwen2.5-3B-Instruct \
     --train-depths 0,1,2 \
-    --output-dir   ckpts/qwen_3b_012
+    --output-dir   ckpts/qwen_3b_012 \
+    --load-in-8bit
 
 uv run python scripts/hf_ss_test.py \
     --model        ckpts/qwen_3b_012/final \
     --pairs        ckpts/negation_012/eval_pairs.json \
     --instruct \
+    --load-in-8bit \
     --train-depths 0,1,2 \
     --output       ckpts/qwen_3b_012/eval_results.json
 
 uv run python scripts/negation_train.py \
     --model        Qwen/Qwen2.5-3B-Instruct \
     --train-depths 0,1,2,3 \
-    --output-dir   ckpts/qwen_3b_0123
+    --output-dir   ckpts/qwen_3b_0123 \
+    --load-in-8bit
 
 uv run python scripts/hf_ss_test.py \
     --model        ckpts/qwen_3b_0123/final \
     --pairs        ckpts/negation_0123/eval_pairs.json \
     --instruct \
+    --load-in-8bit \
     --train-depths 0,1,2,3 \
     --output       ckpts/qwen_3b_0123/eval_results.json
 
 uv run python scripts/negation_train.py \
     --model        Qwen/Qwen2.5-3B-Instruct \
     --train-depths 0,1,2,3,4 \
-    --output-dir   ckpts/qwen_3b_01234
+    --output-dir   ckpts/qwen_3b_01234 \
+    --load-in-8bit
 
 uv run python scripts/hf_ss_test.py \
     --model        ckpts/qwen_3b_01234/final \
     --pairs        ckpts/negation_01234/eval_pairs.json \
     --instruct \
+    --load-in-8bit \
     --train-depths 0,1,2,3,4 \
     --output       ckpts/qwen_3b_01234/eval_results.json
 
