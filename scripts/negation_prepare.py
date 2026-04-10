@@ -4,9 +4,9 @@ scripts/negation_prepare.py
 Split ss_pairs.json into train and held-out sets for the negation depth
 fine-tuning experiment. Saves held_out_pairs.json to the output directory.
 
-The same 20 capital facts (indices 80-99 per depth category) are held out
-from every negation_depth_N category, so there is no capital-level leakage
-between training and evaluation.
+For train depths: groups 80-99 are held out (new capital facts, same phrasings).
+For test depths: all 100 groups are used (none were trained on).
+No overlap: train groups are always indices 0-79 of train-depth categories.
 
 Usage
 -----
@@ -42,11 +42,15 @@ def main() -> None:
     held_out_groups: list[dict] = []
     for depth in range(7):
         depth_groups = [g for g in all_groups if g["category"] == f"negation_depth_{depth}"]
-        train_groups    = depth_groups[:args.train_size]
-        held_out_part   = depth_groups[args.train_size:]
+        if depth in train_depths:
+            train_groups  = depth_groups[:args.train_size]
+            held_out_part = depth_groups[args.train_size:]
+            print(f"  negation_depth_{depth}: {len(train_groups)} train, {len(held_out_part)} eval  [TRAIN]")
+        else:
+            train_groups  = []
+            held_out_part = depth_groups  # all 100 — none were trained on
+            print(f"  negation_depth_{depth}: {len(held_out_part)} eval  [TEST]")
         held_out_groups.extend(held_out_part)
-        status = "TRAIN" if depth in train_depths else "held-out only"
-        print(f"  negation_depth_{depth}: {len(train_groups)} train, {len(held_out_part)} held-out  [{status}]")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
