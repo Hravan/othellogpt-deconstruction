@@ -1,5 +1,5 @@
 """
-scripts/extract_muse_gpt_gpt.py
+scripts/extract_gpt_gpt_embeddings.py
 
 Extract MUSE embeddings from two OthelloGPT checkpoints (e.g. synthetic vs
 championship) over the same game positions. This gives the OthelloGPT↔OthelloGPT
@@ -7,7 +7,7 @@ alignment ceiling to compare against the board-predictor↔OthelloGPT result.
 
 Usage
 -----
-    uv run python scripts/extract_muse_gpt_gpt.py \\
+    uv run python scripts/extract_gpt_gpt_embeddings.py \\
         --src-ckpt ckpts/gpt_synthetic.ckpt \\
         --tgt-ckpt ckpts/gpt_championship.ckpt \\
         --n-games 5000 \\
@@ -17,51 +17,17 @@ Usage
 import argparse
 import pickle
 import random
-import sys
 from pathlib import Path
 
 import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "mingpt"))
-from mingpt.model import GPTConfig, GPTforProbing
-
-from othellogpt_deconstruction.core.tokenizer import stoi, BLOCK_SIZE, PAD_ID, VOCAB_SIZE
+from othellogpt_deconstruction.core.tokenizer import BLOCK_SIZE
+from othellogpt_deconstruction.model.representation_alignment import (
+    GPTforProbing, load_othello_gpt, build_token_batch, N_EMBD,
+)
 
 SYNTHETIC_DATA_DIR = Path("data/sequence_data/othello_synthetic")
-N_EMBD = 512
-
-
-def load_othello_gpt(checkpoint_path: str, device: torch.device) -> GPTforProbing:
-    config = GPTConfig(
-        vocab_size=VOCAB_SIZE,
-        block_size=BLOCK_SIZE,
-        n_layer=8,
-        n_head=8,
-        n_embd=N_EMBD,
-    )
-    model = GPTforProbing(config, probe_layer=8, ln=True)
-    state_dict = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(state_dict)
-    return model.to(device).eval()
-
-
-def build_token_batch(
-    games: list[list[int]],
-    positions: list[int],
-    device: torch.device,
-) -> tuple[torch.Tensor, list[int]]:
-    token_ids_list = []
-    seq_lens = []
-    for game, step in zip(games, positions):
-        prefix = game[: step + 1]
-        seq_len = min(len(prefix), BLOCK_SIZE)
-        tokens = [stoi[pos] for pos in prefix[:seq_len]]
-        padded = tokens + [PAD_ID] * (BLOCK_SIZE - seq_len)
-        token_ids_list.append(padded)
-        seq_lens.append(seq_len)
-    token_ids = torch.tensor(token_ids_list, dtype=torch.long, device=device)
-    return token_ids, seq_lens
 
 
 @torch.no_grad()

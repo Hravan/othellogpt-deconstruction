@@ -1,5 +1,5 @@
 """
-scripts/li_intervention_test.py
+scripts/probe_gradient_steering_test.py
 
 Replication and attack of Li et al.'s intervention experiment.
 
@@ -35,7 +35,7 @@ Conversion: li_label = (our_label + 1) % 3
 
 Usage
 -----
-    uv run python scripts/li_intervention_test.py \\
+    uv run python scripts/probe_gradient_steering_test.py \\
         --games data/games_synthetic_test.json \\
         --layer-start 4 \\
         --mode synthetic \\
@@ -61,94 +61,10 @@ from othellogpt_deconstruction.core.board import (
     replay as board_replay, legal_moves, apply_move, EMPTY, BLACK, WHITE,
 )
 from othellogpt_deconstruction.core.tokenizer import stoi, alg_to_pos, pos_to_alg, itos, BLOCK_SIZE, PAD_ID
-
-
-# ---------------------------------------------------------------------------
-# Encoding conversion
-# ---------------------------------------------------------------------------
-
-def board_to_li(board: np.ndarray) -> torch.Tensor:
-    """
-    Convert our board (EMPTY=0, BLACK=1, WHITE=2) to Li's probe encoding
-    (0=white, 1=empty, 2=black) as a long tensor of shape (64,).
-    """
-    return torch.tensor((board + 1) % 3, dtype=torch.long)
-
-
-# ---------------------------------------------------------------------------
-# Model and probe loading
-# ---------------------------------------------------------------------------
-
-def load_li_model(checkpoint_path: str, probe_layer: int, device: torch.device) -> GPTforProbeIA:
-    mconf = GPTConfig(61, 59, n_layer=8, n_head=8, n_embd=512)
-    model = GPTforProbeIA(mconf, probe_layer=probe_layer)
-    state_dict = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(state_dict)
-    model.to(device)
-    model.eval()
-    return model
-
-
-def load_li_probes(
-    probe_dir: str,
-    layers: list[int],
-    device: torch.device,
-    mid_dim: int = 128,
-) -> dict[int, BatteryProbeClassificationTwoLayer]:
-    probes = {}
-    for layer in layers:
-        probe = BatteryProbeClassificationTwoLayer(
-            device=device, probe_class=3, num_task=64, mid_dim=mid_dim,
-        )
-        checkpoint_path = Path(probe_dir) / f"layer{layer}" / "checkpoint.ckpt"
-        probe.load_state_dict(torch.load(checkpoint_path, map_location=device))
-        probe.eval()
-        probes[layer] = probe
-    return probes
-
-
-# ---------------------------------------------------------------------------
-# Sequence encoding
-# ---------------------------------------------------------------------------
-
-def encode_sequence(sequence: list[str], device: torch.device) -> torch.Tensor:
-    tokens = [stoi[alg_to_pos(move)] for move in sequence]
-    padded = tokens + [PAD_ID] * (BLOCK_SIZE - len(tokens))
-    return torch.tensor([padded], dtype=torch.long, device=device)
-
-
-# ---------------------------------------------------------------------------
-# Forward pass helpers
-# ---------------------------------------------------------------------------
-
-def get_probs_original(model: GPTforProbeIA, x: torch.Tensor, seq_length: int) -> torch.Tensor:
-    """Run standard forward pass, return softmax probs at last position."""
-    with torch.no_grad():
-        logits, _ = model(x)
-    last_logits = logits[0, seq_length - 1, :].clone()
-    last_logits[PAD_ID] = float("-inf")
-    return torch.softmax(last_logits, dim=-1)
-
-
-def topn_errors(probs: torch.Tensor, legal_set: set[int]) -> float:
-    n = len(legal_set)
-    if n == 0:
-        return 0.0
-    predicted_positions: set[int] = set()
-    for token in probs.topk(n + 1).indices:
-        token_int = int(token)
-        if token_int != PAD_ID and token_int in itos:
-            predicted_positions.add(int(itos[token_int]))
-        if len(predicted_positions) == n:
-            break
-    return float(len(predicted_positions - legal_set) + len(legal_set - predicted_positions))
-
-
-def top1_position(probs: torch.Tensor) -> int:
-    token = int(probs.argmax())
-    if token in itos:
-        return int(itos[token])
-    return -1
+from othellogpt_deconstruction.model.probe_intervention import (
+    board_to_probe_encoding, load_probe_intervention_model, load_cell_ownership_probes,
+)
+from othellogpt_deconstruction.model.utils import encode_sequence, forward_pass, rollout, top1_position, topn_errors
 
 
 def ranks_of_positions(probs: torch.Tensor, positions: set[int]) -> list[int]:
@@ -288,47 +204,6 @@ def li_full_intervention(
 
 
 # ---------------------------------------------------------------------------
-# Rollout
-# ---------------------------------------------------------------------------
-
-def rollout(
-    model:          GPTforProbeIA,
-    sequence:       list[str],
-    starting_board: np.ndarray,
-    next_player:    int,
-    n_steps:        int,
-    device:         torch.device,
-) -> list[bool]:
-    board = starting_board.copy()
-    player = next_player
-    seq = list(sequence)
-    results = []
-
-    for _ in range(n_steps):
-        if len(seq) >= BLOCK_SIZE:
-            break
-        x = encode_sequence(seq, device)
-        probs = get_probs_original(model, x, len(seq))
-        pos = top1_position(probs)
-        if pos < 0:
-            break
-
-        legal_set = set(legal_moves(board, player))
-        is_legal = pos in legal_set
-        results.append(is_legal)
-
-        if is_legal:
-            board = apply_move(board, pos, player)
-            player = 3 - player
-            if not legal_moves(board, player):
-                player = 3 - player
-
-        seq.append(pos_to_alg(pos))
-
-    return results
-
-
-# ---------------------------------------------------------------------------
 # Per-position analysis
 # ---------------------------------------------------------------------------
 
@@ -413,13 +288,13 @@ def analyse_position(
     legal_overlap = len(source_legal_set & target_legal_set) / len(target_legal_set)
 
     x = encode_sequence(sequence, device)
-    probs_original = get_probs_original(model, x, len(sequence))
+    probs_original = forward_pass(model, x, len(sequence))
 
     original_vs_source = topn_errors(probs_original, source_legal_set)
     original_vs_target = topn_errors(probs_original, target_legal_set)
 
     # Li's current board labels in Li's encoding
-    labels_current = board_to_li(board).to(device)
+    labels_current = board_to_probe_encoding(board).to(device)
 
     # Run Li's multi-layer intervention
     probs_intervened = li_full_intervention(
@@ -642,11 +517,11 @@ def main() -> None:
     print(f"Device: {device}")
 
     print(f"Loading Li model from {args.checkpoint}...")
-    model = load_li_model(args.checkpoint, probe_layer=args.layer_start, device=device)
+    model = load_probe_intervention_model(args.checkpoint, probe_layer=args.layer_start, device=device)
 
     layers = list(range(args.layer_start, args.layer_end))
     print(f"Loading Li probes from {args.probe_dir} (layers {layers})...")
-    probes = load_li_probes(args.probe_dir, layers, device)
+    probes = load_cell_ownership_probes(args.probe_dir, layers, device)
     print(f"  Loaded {len(probes)} probes.")
 
     print(f"Loading games from {args.games}...")

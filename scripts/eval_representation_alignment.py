@@ -1,12 +1,12 @@
 """
-scripts/eval_muse_alignment.py
+scripts/eval_representation_alignment.py
 
 Compute direct test-pair cosine similarity from MUSE-aligned embeddings,
 plus a shuffled-pairs baseline to establish the noise floor.
 
 Usage
 -----
-    python scripts/eval_muse_alignment.py \
+    python scripts/eval_representation_alignment.py \
         --aligned-src muse/dumped/debug/muse_run/vectors-othello_gpt.txt \
         --aligned-tgt muse/dumped/debug/muse_run/vectors-board_predictor.txt \
         --dict-test data/muse/dict_test.txt

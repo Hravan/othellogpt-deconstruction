@@ -90,7 +90,7 @@ In Li's intervention, the non-linear probe is used both to **define** B' in acti
 | Synthetic model, championship games | 0.8% | 6.7% | 8× |
 | Championship model, championship games (Nanda) | 21.0% | 21.8% (26.5% for m* unique to B') | ~1× |
 | Championship model, championship games (Li) | 21.5% | 21.9% (28.5% for m* unique to B') | ~1× |
-| Synthetic model, **unnatural** benchmark | **0.0%** | **20.4%** (30.9% for m* unique to B') | **∞** |
+| Synthetic model, **unnatural** benchmark (n=1001) | **0.0%** | **20.4%** (30.9% for m* unique to B') | **∞** |
 
 On the synthetic model with natural positions, post-intervention play is 8–23× more illegal than baseline. On the unnatural benchmark the model plays with 0.0% illegal rate before intervention — and 20.4% after. The ratio is effectively infinite: the intervention takes a model playing perfectly on these board states and makes it play illegally one in five times. The cases where m* is genuinely unique to B' (2.3% of positions) are the worst: 30.9% illegal rate.
 
@@ -211,11 +211,92 @@ B' has slightly *more* legal moves than B on average — the set size hypothesis
 
 Whether the set size hypothesis holds for Li's specific unnatural construction (which likely flips many more cells) remains untested. Li does not report their exact construction procedure in sufficient detail to replicate precisely.
 
-### Unnatural benchmark (pending)
+### Maximum-new-legal-moves benchmark (n=46,378)
 
-**Pending experiments:**
-1. Construct unnatural positions (board states unreachable by legal play) and run Li's intervention, computing legal set overlap, null baseline, and mean legal set sizes.
-2. Run rollout persistence on unnatural states: if the model genuinely internalised the illegal board state, subsequent play should remain consistent with it.
+To stress-test the confound argument, we selected positions where the single-cell flip maximises the number of new legal moves in B' — i.e. where Li's metric should be most discriminating and the overlap argument least applicable. This is the best-case scenario for Li.
+
+| Metric | Value |
+|---|---|
+| mean \|legal(B)\| | 9.52 |
+| mean \|legal(B')\| | 11.78 |
+| Legal set overlap | 0.777 |
+| Original model vs legal(B) | 0.013 (baseline; expected ~0) |
+| Original model vs legal(B') | 3.734 (null baseline — **not reported by Li**) |
+| Intervened model vs legal(B') | 0.562 (Li's claimed metric) |
+| Intervened model vs legal(B) | 1.245 (drift from B) |
+| Improvement toward B' | 84.9% of maximum |
+| Drift from B | 33.0% of maximum |
+| **Gap** | **51.9pp** |
+
+Even in the best-case positions for Li, the gap between apparent improvement and actual drift is *larger* than in the random case (51.9pp vs 41.8pp). Two compounding effects explain this:
+
+1. **Overlap effect (0.777)**: 77.7% of B'-legal moves are already legal for B, so most "improvement" is free.
+2. **Set size effect**: B' has 24% more legal moves than B (11.78 vs 9.52). The topN metric penalises missing legal moves — with more legal moves in B', the null baseline (3.734) is inflated both by overlap and by B' simply having a larger legal set. The model can improve toward B' partly by predicting more moves in general, not specifically B'-unique ones.
+
+The rank metrics confirm the intervention is genuinely directional:
+
+| Metric | Before | After |
+|---|---|---|
+| Mean rank of unique-to-B' moves | 26.9 (median 23) | 10.8 (median 11) |
+| Mean rank of B-only moves | 6.4 (median 6) | 14.3 (median 14) |
+
+Moves that are legal only under B' rise by 16 rank positions on average; moves legal only under B drop by 7.9 positions. The intervention is not a random perturbation — it pushes the output distribution in the correct direction. We do not dispute this. What the rollout shows is that this directional push does not persist: the model snaps back toward its trained distribution within one step. The rollout result is unambiguous:
+
+| | Rate |
+|---|---|
+| Baseline illegal rate (no intervention) | 0.2% (n=46,037) |
+| Post-intervention illegal rate (m* legal for B') | 9.4% (n=45,997) |
+| Post-intervention illegal rate (m* unique to B' only) | 8.7% (n=1,371) |
+| Forced unique-to-B' move rollout illegal rate | 4.9% (n=46,037) |
+
+Post-intervention play is **47× more illegal than baseline** — the largest ratio across all our experiments. Selecting positions where B' is most different from B makes the intervention look maximally successful on Li's metric while producing maximally erratic subsequent play. This is the opposite of what a world model predicts.
+
+### Unnatural benchmark (n=1001)
+
+Li et al. report their strongest result on the unnatural benchmark: average top-N error of **0.06** after intervention, versus 0.12 on natural positions and a null baseline of 2.59. They interpret the lower error on positions "far from anything encountered in the training distribution" as the most compelling evidence for a causal world model.
+
+Our results (n=1001) explain why the unnatural benchmark gives Li's best numbers — and why that is not evidence of a world model.
+
+| Metric | Value |
+|---|---|
+| mean \|legal(B)\| | 10.62 |
+| mean \|legal(B')\| | 9.97 |
+| Legal set overlap | 0.922 |
+| Original model vs legal(B) | 0.002 (baseline; expected ~0) |
+| Original model vs legal(B') | 2.723 (null baseline — **not reported by Li**) |
+| Intervened model vs legal(B') | 0.158 (Li's claimed metric) |
+| Intervened model vs legal(B) | 1.471 (drift from B) |
+| Improvement toward B' | 94.2% of maximum |
+| Drift from B | 53.9% of maximum |
+| **Gap** | **40.3pp** |
+
+**Why the unnatural benchmark gives better topN results.** B' in the unnatural benchmark has *fewer* legal moves than B (9.97 vs 10.62). The topN metric measures alignment with B'-legal moves, so a smaller target is mechanically easier to hit. Li's Figure 10 (KL divergence) makes this visible: the unnatural null baseline KL is 0.64 versus 0.92 for natural positions — the model is already closer to B' before any intervention, because B' has fewer legal moves to cover.
+
+Combined with the 92.2% overlap, most apparent improvement is free: moves legal in both B and B' count toward B' alignment without requiring the model to track anything B'-specific.
+
+**m* is unique to B' in only 2.3% of positions** (23/1001). The intervention reshuffles probability mass within the B ∩ B' intersection in the vast majority of cases — it almost never causes the model to genuinely commit to a B'-specific top prediction.
+
+**Rank metrics:**
+
+| Metric | Before | After |
+|---|---|---|
+| Mean rank of unique-to-B' moves | 26.8 (median 22) | 8.6 (median 9) |
+| Mean rank of B-only moves | 6.0 (median 5) | 12.4 (median 12) |
+
+The intervention is directional — unique-to-B' moves rise by 18 rank positions, B-only moves drop by 6.5. We do not dispute this. The rollout shows it does not persist.
+
+**Rollout persistence (10 steps):**
+
+| | Rate |
+|---|---|
+| Baseline illegal rate (no intervention) | 0.0% (n=1001) |
+| Post-intervention illegal rate (m* legal for B') | 20.4% (n=1000) |
+| Post-intervention illegal rate (m* unique to B' only) | 30.9% (n=23) |
+| Forced unique-to-B' move rollout illegal rate | 17.9% (n=545) |
+
+The unnatural positions are, paradoxically, the clearest case against Li's interpretation. Before intervention, the model plays these positions with 0% illegal rate — it has learned to play legally even on board states unreachable by any legal game. After intervention, 20.4% of subsequent moves are illegal. The 23 positions where m* is genuinely unique to B' — the cases Li's metric is designed to capture — produce the worst subsequent play at 30.9%. A model that had internalised B' as its world state would play at least as legally as baseline. Instead it becomes maximally erratic precisely when the intervention most appears to have worked.
+
+The higher improvement percentage on the unnatural benchmark (94.2% vs 80.2% on natural) is the opposite of what it appears: it reflects a smaller legal target set and higher overlap, not stronger causal board tracking. Our topN error of 0.158 is higher than Li's reported 0.06, likely because Li's unnatural positions are constructed differently (possibly multi-cell flips producing lower overlap). The null baseline and rollout — the two metrics Li does not report — tell the same story regardless.
 
 ---
 

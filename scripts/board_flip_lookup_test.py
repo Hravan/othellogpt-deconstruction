@@ -1,5 +1,5 @@
 """
-scripts/nanda_intervention.py
+scripts/board_flip_lookup_test.py
 
 Lookup table test for Nanda et al.'s world model claim.
 
@@ -35,7 +35,7 @@ Usage
         --output data/board_probes.pt
 
     # Then run this:
-    uv run python scripts/nanda_intervention.py \\
+    uv run python scripts/board_flip_lookup_test.py \\
         --corpus data/sequence_data/othello_championship \\
         --probes data/board_probes.pt \\
         --layer 5
@@ -58,29 +58,7 @@ from othellogpt_deconstruction.model.board_probe import (
 )
 from othellogpt_deconstruction.model.inference import load_model
 from othellogpt_deconstruction.model.probes import load_probes
-
-
-# ---------------------------------------------------------------------------
-# Forward pass helpers
-# ---------------------------------------------------------------------------
-
-def encode_sequence(sequence: list[str], device: torch.device) -> torch.Tensor:
-    tokens = [stoi[alg_to_pos(move)] for move in sequence]
-    padded = tokens + [PAD_ID] * (BLOCK_SIZE - len(tokens))
-    return torch.tensor([padded], dtype=torch.long, device=device)
-
-
-def forward_pass(model: torch.nn.Module, x: torch.Tensor, seq_length: int) -> torch.Tensor:
-    with torch.no_grad():
-        logits, _ = model(x)
-    last_logits = logits[0, seq_length - 1, :].clone()
-    last_logits[PAD_ID] = float("-inf")
-    return torch.softmax(last_logits, dim=-1)
-
-
-def top1_position(probs: torch.Tensor) -> int:
-    token = int(probs.argmax())
-    return int(itos[token]) if token != PAD_ID else -1
+from othellogpt_deconstruction.model.utils import encode_sequence, forward_pass, top1_position
 
 
 # ---------------------------------------------------------------------------

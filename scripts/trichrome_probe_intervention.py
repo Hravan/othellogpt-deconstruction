@@ -49,26 +49,8 @@ from othellogpt_deconstruction.core.tokenizer import stoi, alg_to_pos, itos, BLO
 from othellogpt_deconstruction.intervention.hooks import collect_activations, patch_activations
 from othellogpt_deconstruction.model.inference import load_model
 from othellogpt_deconstruction.model.probes import load_probes
+from othellogpt_deconstruction.model.utils import encode_sequence, forward_pass, top1_position
 from othellogpt_deconstruction.analysis.metrics import metrics_full
-
-
-# ---------------------------------------------------------------------------
-# Forward pass helpers
-# ---------------------------------------------------------------------------
-
-def encode_sequence(sequence: list[str], device: torch.device) -> torch.Tensor:
-    tokens = [stoi[alg_to_pos(move)] for move in sequence]
-    padded = tokens + [PAD_ID] * (BLOCK_SIZE - len(tokens))
-    return torch.tensor([padded], dtype=torch.long, device=device)
-
-
-def forward_pass(model: torch.nn.Module, x: torch.Tensor, seq_length: int) -> torch.Tensor:
-    """Return softmax distribution at the last token position."""
-    with torch.no_grad():
-        logits, _ = model(x)
-    last_logits = logits[0, seq_length - 1, :].clone()
-    last_logits[PAD_ID] = float("-inf")
-    return torch.softmax(last_logits, dim=-1)
 
 
 # ---------------------------------------------------------------------------
@@ -140,10 +122,6 @@ def analyse_pair(
     # Intervene with random direction
     with patch_activations(model, len(seq_a), {layer: random_patch}):
         probs_random = forward_pass(model, x_a, len(seq_a))
-
-    def top1_position(probs: torch.Tensor) -> int:
-        token = int(probs.argmax())
-        return int(itos[token]) if token != PAD_ID else -1
 
     top1_original  = top1_position(probs_a)
     top1_trichrome = top1_position(probs_trichrome)

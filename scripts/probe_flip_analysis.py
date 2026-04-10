@@ -43,6 +43,7 @@ from othellogpt_deconstruction.model.board_probe import (
 )
 from othellogpt_deconstruction.model.inference import load_model
 from othellogpt_deconstruction.model.probes import load_probes
+from othellogpt_deconstruction.model.utils import encode_sequence
 
 
 # ---------------------------------------------------------------------------
@@ -81,12 +82,6 @@ def replay_with_flip_mask(moves: list[str]) -> tuple[np.ndarray, int, np.ndarray
 # ---------------------------------------------------------------------------
 # Per-position analysis
 # ---------------------------------------------------------------------------
-
-def encode_sequence(sequence: list[str], device: torch.device) -> torch.Tensor:
-    tokens = [stoi[alg_to_pos(move)] for move in sequence]
-    padded = tokens + [PAD_ID] * (BLOCK_SIZE - len(tokens))
-    return torch.tensor([padded], dtype=torch.long, device=device)
-
 
 def analyse_position(
     model:    torch.nn.Module,

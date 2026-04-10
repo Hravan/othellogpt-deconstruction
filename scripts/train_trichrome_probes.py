@@ -38,17 +38,12 @@ import othellogpt_deconstruction.core.trichrome as trichrome
 from othellogpt_deconstruction.intervention.hooks import collect_activations
 from othellogpt_deconstruction.model.inference import load_model
 from othellogpt_deconstruction.model.probes import TrichromeProbe, save_probes
+from othellogpt_deconstruction.model.utils import encode_sequence
 
 
 # ---------------------------------------------------------------------------
 # Data collection
 # ---------------------------------------------------------------------------
-
-def encode_sequence(sequence: list[str], device: torch.device) -> torch.Tensor:
-    tokens = [stoi[alg_to_pos(move)] for move in sequence]
-    padded = tokens + [PAD_ID] * (BLOCK_SIZE - len(tokens))
-    return torch.tensor([padded], dtype=torch.long, device=device)
-
 
 def collect_data(
     model:                 torch.nn.Module,

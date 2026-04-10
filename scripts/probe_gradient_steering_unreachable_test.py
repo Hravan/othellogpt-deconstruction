@@ -1,5 +1,5 @@
 """
-scripts/li_unnatural_test.py
+scripts/probe_gradient_steering_unreachable_test.py
 
 Attack of Li et al.'s intervention on the unnatural benchmark.
 
@@ -40,7 +40,7 @@ Conversion: li_label = (our_label + 1) % 3
 
 Usage
 -----
-    uv run python scripts/li_unnatural_test.py \\
+    uv run python scripts/probe_gradient_steering_unreachable_test.py \\
         --benchmark data/intervention_benchmark.pkl \\
         --output data/li_unnatural_results.json
 """
@@ -60,77 +60,14 @@ from mingpt.model import GPTforProbeIA, GPTConfig
 from mingpt.probe_model import BatteryProbeClassificationTwoLayer
 
 from othellogpt_deconstruction.core.board import (
-    start_board, flipped_by, legal_moves, apply_move, EMPTY, BLACK, WHITE,
+    legal_moves, apply_move, EMPTY, BLACK, WHITE,
 )
 from othellogpt_deconstruction.core.tokenizer import stoi, itos, pos_to_alg, PAD_ID, BLOCK_SIZE
-
-
-# ---------------------------------------------------------------------------
-# Encoding conversion
-# ---------------------------------------------------------------------------
-
-def board_to_li(board: np.ndarray) -> torch.Tensor:
-    """Convert our board (EMPTY=0, BLACK=1, WHITE=2) to Li's probe encoding."""
-    return torch.tensor((board + 1) % 3, dtype=torch.long)
-
-
-# ---------------------------------------------------------------------------
-# Board simulation (non-validating)
-# ---------------------------------------------------------------------------
-
-def replay_nonvalidating(board_positions: list[int]) -> tuple[np.ndarray, int]:
-    """
-    Replay a sequence of board positions without legality checks.
-
-    Used for Li's unnatural benchmark, where sequences include illegal moves.
-    Pieces are placed and flanks flipped as normal, but the move itself need
-    not be legal on the current board.
-    """
-    board = start_board()
-    player = BLACK
-    for pos in board_positions:
-        flips = flipped_by(board, pos, player)
-        new_board = board.copy()
-        new_board[pos] = player
-        for fp in flips:
-            new_board[fp] = player
-        board = new_board
-        player = 3 - player
-        if not legal_moves(board, player):
-            player = 3 - player
-    return board, player
-
-
-# ---------------------------------------------------------------------------
-# Model and probe loading
-# ---------------------------------------------------------------------------
-
-def load_li_model(checkpoint_path: str, probe_layer: int, device: torch.device) -> GPTforProbeIA:
-    mconf = GPTConfig(61, 59, n_layer=8, n_head=8, n_embd=512)
-    model = GPTforProbeIA(mconf, probe_layer=probe_layer)
-    state_dict = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(state_dict)
-    model.to(device)
-    model.eval()
-    return model
-
-
-def load_li_probes(
-    probe_dir: str,
-    layers: list[int],
-    device: torch.device,
-    mid_dim: int = 128,
-) -> dict[int, BatteryProbeClassificationTwoLayer]:
-    probes = {}
-    for layer in layers:
-        probe = BatteryProbeClassificationTwoLayer(
-            device=device, probe_class=3, num_task=64, mid_dim=mid_dim,
-        )
-        checkpoint_path = Path(probe_dir) / f"layer{layer}" / "checkpoint.ckpt"
-        probe.load_state_dict(torch.load(checkpoint_path, map_location=device))
-        probe.eval()
-        probes[layer] = probe
-    return probes
+from othellogpt_deconstruction.model.probe_intervention import (
+    board_to_probe_encoding, load_probe_intervention_model, load_cell_ownership_probes,
+    replay_nonvalidating,
+)
+from othellogpt_deconstruction.model.utils import forward_pass, top1_position, topn_errors
 
 
 # ---------------------------------------------------------------------------
@@ -142,39 +79,6 @@ def encode_sequence_from_positions(board_positions: list[int], device: torch.dev
     tokens = [stoi[pos] for pos in board_positions]
     padded = tokens + [PAD_ID] * (BLOCK_SIZE - len(tokens))
     return torch.tensor([padded], dtype=torch.long, device=device)
-
-
-# ---------------------------------------------------------------------------
-# Forward pass helpers
-# ---------------------------------------------------------------------------
-
-def get_probs_original(model: GPTforProbeIA, x: torch.Tensor, seq_length: int) -> torch.Tensor:
-    with torch.no_grad():
-        logits, _ = model(x)
-    last_logits = logits[0, seq_length - 1, :].clone()
-    last_logits[PAD_ID] = float("-inf")
-    return torch.softmax(last_logits, dim=-1)
-
-
-def topn_errors(probs: torch.Tensor, legal_set: set[int]) -> float:
-    n = len(legal_set)
-    if n == 0:
-        return 0.0
-    predicted_positions: set[int] = set()
-    for token in probs.topk(n + 1).indices:
-        token_int = int(token)
-        if token_int != PAD_ID and token_int in itos:
-            predicted_positions.add(int(itos[token_int]))
-        if len(predicted_positions) == n:
-            break
-    return float(len(predicted_positions - legal_set) + len(legal_set - predicted_positions))
-
-
-def top1_position(probs: torch.Tensor) -> int:
-    token = int(probs.argmax())
-    if token in itos:
-        return int(itos[token])
-    return -1
 
 
 def ranks_of_positions(probs: torch.Tensor, positions: set[int]) -> list[int]:
@@ -301,7 +205,7 @@ def rollout(
         if len(seq) >= BLOCK_SIZE:
             break
         x = encode_sequence_from_positions(seq, device)
-        probs = get_probs_original(model, x, len(seq))
+        probs = forward_pass(model, x, len(seq))
         pos = top1_position(probs)
         if pos < 0:
             break
@@ -361,7 +265,7 @@ def analyse_position(
     only_in_source   = source_legal_set - target_legal_set
 
     x = encode_sequence_from_positions(history, device)
-    probs_original = get_probs_original(model, x, len(history))
+    probs_original = forward_pass(model, x, len(history))
 
     original_vs_source = topn_errors(probs_original, source_legal_set)
     original_vs_target = topn_errors(probs_original, target_legal_set)
@@ -369,7 +273,7 @@ def analyse_position(
     ranks_before_unique      = ranks_of_positions(probs_original, unique_to_target)
     ranks_only_source_before = ranks_of_positions(probs_original, only_in_source)
 
-    labels_current = board_to_li(board).to(device)
+    labels_current = board_to_probe_encoding(board).to(device)
 
     probs_intervened = li_full_intervention(
         model, probes, x, len(history),
@@ -572,11 +476,11 @@ def main() -> None:
     print(f"Device: {device}")
 
     print(f"Loading Li model from {args.checkpoint}...")
-    model = load_li_model(args.checkpoint, probe_layer=args.layer_start, device=device)
+    model = load_probe_intervention_model(args.checkpoint, probe_layer=args.layer_start, device=device)
 
     layers = list(range(args.layer_start, args.layer_end))
     print(f"Loading Li probes from {args.probe_dir} (layers {layers})...")
-    probes = load_li_probes(args.probe_dir, layers, device)
+    probes = load_cell_ownership_probes(args.probe_dir, layers, device)
     print(f"  Loaded {len(probes)} probes.")
 
     print(f"Loading unnatural benchmark from {args.benchmark}...")

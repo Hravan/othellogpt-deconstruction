@@ -1,5 +1,5 @@
 """
-scripts/nanda_world_model_test.py
+scripts/board_flip_world_model_test.py
 
 Two experiments attacking Nanda et al.'s world model claim via their
 illegal-state intervention.
@@ -37,12 +37,12 @@ it has been fed a game history it was never trained on and has no "memory" of B'
 
 Usage
 -----
-    uv run python scripts/nanda_world_model_test.py \\
+    uv run python scripts/board_flip_world_model_test.py \\
         --games data/games_test.json \\
         --probes data/board_probes.pt \\
         --layer 5
 
-    uv run python scripts/nanda_world_model_test.py \\
+    uv run python scripts/board_flip_world_model_test.py \\
         --games data/games_test.json \\
         --probes data/board_probes.pt \\
         --layer 5 \\
@@ -71,104 +71,9 @@ from othellogpt_deconstruction.model.board_probe import (
 )
 from othellogpt_deconstruction.model.inference import load_model
 from othellogpt_deconstruction.model.probes import load_probes
-
-
-# ---------------------------------------------------------------------------
-# Forward pass helpers
-# ---------------------------------------------------------------------------
-
-def encode_sequence(sequence: list[str], device: torch.device) -> torch.Tensor:
-    tokens = [stoi[alg_to_pos(move)] for move in sequence]
-    padded = tokens + [PAD_ID] * (BLOCK_SIZE - len(tokens))
-    return torch.tensor([padded], dtype=torch.long, device=device)
-
-
-def forward_pass(model: torch.nn.Module, x: torch.Tensor, seq_length: int) -> torch.Tensor:
-    with torch.no_grad():
-        logits, _ = model(x)
-    last_logits = logits[0, seq_length - 1, :].clone()
-    last_logits[PAD_ID] = float("-inf")
-    return torch.softmax(last_logits, dim=-1)
-
-
-def top1_position(probs: torch.Tensor) -> int:
-    token = int(probs.argmax())
-    return int(itos[token]) if token != PAD_ID else -1
-
-
-def topn_positions(probs: torch.Tensor, n: int) -> set[int]:
-    top_tokens = probs.topk(n + 1).indices
-    positions = set()
-    for token in top_tokens:
-        token = int(token)
-        if token != PAD_ID:
-            positions.add(int(itos[token]))
-        if len(positions) == n:
-            break
-    return positions
-
-
-# ---------------------------------------------------------------------------
-# Experiment 1 helpers
-# ---------------------------------------------------------------------------
-
-def topn_errors(probs: torch.Tensor, legal_set: set[int]) -> float:
-    """
-    Nanda et al.'s metric: take top-N predictions (N = |legal_set|) and count
-    false positives + false negatives against legal_set.
-    """
-    n = len(legal_set)
-    if n == 0:
-        return 0.0
-    predicted = topn_positions(probs, n)
-    return float(len(predicted - legal_set) + len(legal_set - predicted))
-
-
-# ---------------------------------------------------------------------------
-# Experiment 2 helpers
-# ---------------------------------------------------------------------------
-
-def rollout(
-    model:          torch.nn.Module,
-    sequence:       list[str],
-    starting_board: np.ndarray,
-    next_player:    int,
-    n_steps:        int,
-    device:         torch.device,
-) -> list[bool]:
-    """
-    Roll out n_steps moves from starting_board with no intervention.
-    At each step feed the current sequence to the model, take top-1, check legality.
-    Always appends the predicted move to the sequence (even if illegal) so the model
-    sees its own outputs. Returns a list of booleans: True = legal prediction.
-    """
-    board = starting_board.copy()
-    player = next_player
-    seq = list(sequence)
-    results = []
-
-    for _ in range(n_steps):
-        if len(seq) >= BLOCK_SIZE:
-            break
-        x = encode_sequence(seq, device)
-        probs = forward_pass(model, x, len(seq))
-        pos = top1_position(probs)
-        if pos < 0:
-            break
-
-        legal_set = set(legal_moves(board, player))
-        is_legal = pos in legal_set
-        results.append(is_legal)
-
-        if is_legal:
-            board = apply_move(board, pos, player)
-            player = 3 - player
-            if not legal_moves(board, player):
-                player = 3 - player
-
-        seq.append(pos_to_alg(pos))
-
-    return results
+from othellogpt_deconstruction.model.utils import (
+    encode_sequence, forward_pass, top1_position, topn_positions, topn_errors, rollout,
+)
 
 
 # ---------------------------------------------------------------------------

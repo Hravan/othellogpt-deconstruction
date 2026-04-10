@@ -1,5 +1,5 @@
 """
-scripts/nanda_experiment.py
+scripts/board_flip_intervention_test.py
 
 Two combined experiments attacking Nanda et al.'s illegal-state intervention claim.
 
@@ -40,7 +40,7 @@ on.
 
 Usage
 -----
-    uv run python scripts/nanda_experiment.py \\
+    uv run python scripts/board_flip_intervention_test.py \\
         --games data/games_test.json \\
         --probes data/board_probes.pt \\
         --layer 5
@@ -66,107 +66,9 @@ from othellogpt_deconstruction.model.board_probe import (
 )
 from othellogpt_deconstruction.model.inference import load_model
 from othellogpt_deconstruction.model.probes import load_probes
-
-
-# ---------------------------------------------------------------------------
-# Forward pass helpers
-# ---------------------------------------------------------------------------
-
-def encode_sequence(sequence: list[str], device: torch.device) -> torch.Tensor:
-    tokens = [stoi[alg_to_pos(move)] for move in sequence]
-    padded = tokens + [PAD_ID] * (BLOCK_SIZE - len(tokens))
-    return torch.tensor([padded], dtype=torch.long, device=device)
-
-
-def forward_pass(model: torch.nn.Module, x: torch.Tensor, seq_length: int) -> torch.Tensor:
-    with torch.no_grad():
-        logits, _ = model(x)
-    last_logits = logits[0, seq_length - 1, :].clone()
-    last_logits[PAD_ID] = float("-inf")
-    return torch.softmax(last_logits, dim=-1)
-
-
-def top1_position(probs: torch.Tensor) -> int:
-    token = int(probs.argmax())
-    return int(itos[token]) if token != PAD_ID else -1
-
-
-def topn_positions(probs: torch.Tensor, n: int) -> set[int]:
-    """Return the board positions of the top-n predicted tokens."""
-    top_tokens = probs.topk(n + 1).indices  # +1 in case PAD slips in
-    positions = set()
-    for token in top_tokens:
-        token = int(token)
-        if token != PAD_ID:
-            positions.add(int(itos[token]))
-        if len(positions) == n:
-            break
-    return positions
-
-
-# ---------------------------------------------------------------------------
-# Experiment 1: top-N error rate
-# ---------------------------------------------------------------------------
-
-def topn_errors(probs: torch.Tensor, legal_set: set[int]) -> float:
-    """
-    Nanda et al.'s metric: take top-N predictions (N = |legal_set|) and count
-    false positives + false negatives against legal_set.
-    """
-    n = len(legal_set)
-    if n == 0:
-        return 0.0
-    predicted = topn_positions(probs, n)
-    false_positives = len(predicted - legal_set)
-    false_negatives = len(legal_set - predicted)
-    return float(false_positives + false_negatives)
-
-
-# ---------------------------------------------------------------------------
-# Experiment 2: rollout
-# ---------------------------------------------------------------------------
-
-def rollout(
-    model:         torch.nn.Module,
-    sequence:      list[str],
-    starting_board: np.ndarray,
-    next_player:   int,
-    n_steps:       int,
-    device:        torch.device,
-) -> list[bool]:
-    """
-    Roll out n_steps moves from starting_board with no intervention.
-    At each step feed the current sequence to the model, take top-1, check legality.
-    Returns a list of booleans: True = legal move predicted.
-    """
-    board = starting_board.copy()
-    player = next_player
-    seq = list(sequence)
-    results = []
-
-    for _ in range(n_steps):
-        if len(seq) >= BLOCK_SIZE:
-            break
-        x = encode_sequence(seq, device)
-        probs = forward_pass(model, x, len(seq))
-        pos = top1_position(probs)
-
-        legal_set = set(legal_moves(board, player))
-        is_legal = pos in legal_set
-        results.append(is_legal)
-
-        if is_legal:
-            board = apply_move(board, pos, player)
-            player = 3 - player
-            if not legal_moves(board, player):
-                player = 3 - player
-        # Always append the move to the sequence so the model sees it
-        if pos >= 0:
-            seq.append(pos_to_alg(pos))
-        else:
-            break
-
-    return results
+from othellogpt_deconstruction.model.utils import (
+    encode_sequence, forward_pass, top1_position, topn_positions, topn_errors, rollout,
+)
 
 
 # ---------------------------------------------------------------------------

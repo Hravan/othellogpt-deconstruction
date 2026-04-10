@@ -33,6 +33,11 @@ packages = ["src/othellogpt_deconstruction"]
 [tool.uv.sources]
 mingpt = { path = "mingpt", editable = true }
 
+[tool.uv.workspace]
+members = [
+    "semantic-sensitivity",
+]
+
 [dependency-groups]
 dev = [
     "ipython>=9.12.0",

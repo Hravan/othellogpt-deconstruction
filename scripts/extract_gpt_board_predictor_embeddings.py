@@ -1,5 +1,5 @@
 """
-scripts/extract_muse_embeddings.py
+scripts/extract_gpt_board_predictor_embeddings.py
 
 Extract final hidden-layer representations from OthelloGPT and the board state
 predictor for the same game positions, and save in MUSE text format for
@@ -18,7 +18,7 @@ Output
 
 Usage
 -----
-    uv run python scripts/extract_muse_embeddings.py \\
+    uv run python scripts/extract_gpt_board_predictor_embeddings.py \\
         --othello-gpt-ckpt ckpts/gpt_synthetic.ckpt \\
         --board-predictor-ckpt ckpts/board_predictor.pt \\
         --n-games 5000
@@ -33,33 +33,13 @@ from pathlib import Path
 import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "mingpt"))
-from mingpt.model import GPTConfig, GPTforProbing
-
-from othellogpt_deconstruction.core.tokenizer import stoi, BLOCK_SIZE, PAD_ID, VOCAB_SIZE
+from othellogpt_deconstruction.core.tokenizer import BLOCK_SIZE
+from othellogpt_deconstruction.model.representation_alignment import (
+    GPTforProbing, load_othello_gpt, build_token_batch, N_EMBD,
+)
 from train_board_predictor import BoardStatePredictor
 
 SYNTHETIC_DATA_DIR = Path("data/sequence_data/othello_synthetic")
-N_EMBD = 512
-
-
-# ---------------------------------------------------------------------------
-# Model loading
-# ---------------------------------------------------------------------------
-
-def load_othello_gpt(checkpoint_path: str, device: torch.device) -> GPTforProbing:
-    """Load OthelloGPT as GPTforProbing to extract ln_f hidden states."""
-    config = GPTConfig(
-        vocab_size=VOCAB_SIZE,
-        block_size=BLOCK_SIZE,
-        n_layer=8,
-        n_head=8,
-        n_embd=N_EMBD,
-    )
-    model = GPTforProbing(config, probe_layer=8, ln=True)
-    state_dict = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(state_dict)
-    return model.to(device).eval()
 
 
 def load_board_predictor(checkpoint_path: str, device: torch.device, n_layer: int = 4) -> BoardStatePredictor:
@@ -72,37 +52,6 @@ def load_board_predictor(checkpoint_path: str, device: torch.device, n_layer: in
 # ---------------------------------------------------------------------------
 # Embedding extraction
 # ---------------------------------------------------------------------------
-
-def build_token_batch(
-    games: list[list[int]],
-    positions: list[int],
-    device: torch.device,
-) -> tuple[torch.Tensor, list[int]]:
-    """
-    Build a padded token batch for a list of (game, position) pairs.
-
-    Parameters
-    ----------
-    games     : list of games (each game is a list of board positions 0-63)
-    positions : for each game, the step index (0-based) to extract representation at
-
-    Returns
-    -------
-    token_ids : (N, BLOCK_SIZE) long tensor
-    seq_lens  : list of actual sequence lengths (= position + 1)
-    """
-    token_ids_list = []
-    seq_lens = []
-    for game, step in zip(games, positions):
-        prefix = game[: step + 1]
-        seq_len = min(len(prefix), BLOCK_SIZE)
-        tokens = [stoi[pos] for pos in prefix[:seq_len]]
-        padded = tokens + [PAD_ID] * (BLOCK_SIZE - seq_len)
-        token_ids_list.append(padded)
-        seq_lens.append(seq_len)
-    token_ids = torch.tensor(token_ids_list, dtype=torch.long, device=device)
-    return token_ids, seq_lens
-
 
 @torch.no_grad()
 def extract_representations(
