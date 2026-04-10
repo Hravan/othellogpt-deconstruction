@@ -52,13 +52,28 @@ def main() -> None:
             print(f"  negation_depth_{depth}: {len(held_out_part)} eval  [TEST]")
         held_out_groups.extend(held_out_part)
 
+    parity_groups = [
+        g for g in all_groups if g["category"] in ("negation_even", "negation_odd")
+    ]
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "held_out_pairs.json"
-    with open(output_path, "w", encoding="utf-8") as output_file:
+
+    held_out_path = output_dir / "held_out_pairs.json"
+    with open(held_out_path, "w", encoding="utf-8") as output_file:
         json.dump(held_out_groups, output_file, indent=2, ensure_ascii=False)
 
-    print(f"\nSaved {len(held_out_groups)} held-out groups to {output_path}")
+    parity_path = output_dir / "parity_pairs.json"
+    with open(parity_path, "w", encoding="utf-8") as output_file:
+        json.dump(parity_groups, output_file, indent=2, ensure_ascii=False)
+
+    eval_path = output_dir / "eval_pairs.json"
+    with open(eval_path, "w", encoding="utf-8") as output_file:
+        json.dump(held_out_groups + parity_groups, output_file, indent=2, ensure_ascii=False)
+
+    print(f"\nSaved {len(held_out_groups)} held-out groups  → {held_out_path}")
+    print(f"Saved {len(parity_groups)} parity groups     → {parity_path}")
+    print(f"Saved {len(held_out_groups) + len(parity_groups)} total eval groups → {eval_path}")
 
 
 if __name__ == "__main__":

@@ -197,7 +197,6 @@ def print_report(results: list[dict], model_name: str) -> None:
     print(f"Semantic Sensitivity — {model_name}  (n={len(results)} groups)")
     print("=" * 70)
     print(f"\n  {'SS  (mean TV distance)':.<{col}} {sum(all_ss) / len(all_ss):.4f}")
-    print(f"  {'SSS (1 - SS)':.<{col}} {1 - sum(all_ss) / len(all_ss):.4f}")
     print(f"  {'CR  (normalized)':.<{col}} {sum(all_cr_norm) / len(all_cr_norm):.4f}")
 
     by_category: dict[str, list] = defaultdict(list)
@@ -208,13 +207,13 @@ def print_report(results: list[dict], model_name: str) -> None:
             "cr_norm": result["metrics"]["cr"] / cr_max(n_questions),
         })
 
-    print(f"\n  {'Category':<30}  {'n':>5}  {'SS':>6}  {'SSS':>6}  {'CR':>6}")
-    print(f"  {'-'*30}  {'-'*5}  {'-'*6}  {'-'*6}  {'-'*6}")
+    print(f"\n  {'Category':<30}  {'n':>5}  {'SS':>6}  {'CR':>6}")
+    print(f"  {'-'*30}  {'-'*5}  {'-'*6}  {'-'*6}")
     for category in sorted(by_category):
         category_metrics = by_category[category]
         ss_cat = sum(m["ss"] for m in category_metrics) / len(category_metrics)
         cr_cat = sum(m["cr_norm"] for m in category_metrics) / len(category_metrics)
-        print(f"  {category:<30}  {len(category_metrics):>5}  {ss_cat:>6.4f}  {1-ss_cat:>6.4f}  {cr_cat:>6.4f}")
+        print(f"  {category:<30}  {len(category_metrics):>5}  {ss_cat:>6.4f}  {cr_cat:>6.4f}")
 
     print()
 
@@ -340,6 +339,36 @@ def print_negation_accuracy(results: list[dict], train_depths_arg: str) -> None:
         accuracy = num_correct / num_total if num_total > 0 else 0.0
         label = DEPTH_LABELS[depth] if depth < len(DEPTH_LABELS) else f"depth-{depth}"
         print(f"  {label:<18} {expected_answer:<10} {status:<8} {accuracy:>8.3f}  ({num_correct}/{num_total})")
+
+    parity_categories = [
+        ("negation_even", "yes"),
+        ("negation_odd",  "no"),
+    ]
+    parity_results = [
+        r for r in results if r["category"] in ("negation_even", "negation_odd")
+    ]
+    if parity_results:
+        print()
+        print(f"  {'Parity group':<18} {'Expected':<10} {'SS':>8}  {'CR':>8}  {'Accuracy':>8}")
+        print(f"  {'-'*18} {'-'*10} {'-'*8}  {'-'*8}  {'-'*8}")
+        for category, expected_answer in parity_categories:
+            category_results = [r for r in parity_results if r["category"] == category]
+            if not category_results:
+                continue
+            ss_values = [r["metrics"]["ss"] for r in category_results]
+            cr_values = [
+                r["metrics"]["cr"] / cr_max(len(r["questions"])) for r in category_results
+            ]
+            num_correct = sum(
+                1 for r in category_results
+                for answer in r["metrics"]["answers"]
+                if answer.strip().lower() == expected_answer
+            )
+            num_total = sum(len(r["metrics"]["answers"]) for r in category_results)
+            accuracy = num_correct / num_total if num_total > 0 else 0.0
+            ss_mean = sum(ss_values) / len(ss_values)
+            cr_mean = sum(cr_values) / len(cr_values)
+            print(f"  {category:<18} {expected_answer:<10} {ss_mean:>8.4f}  {cr_mean:>8.4f}  {accuracy:>8.3f}")
 
     print()
 
