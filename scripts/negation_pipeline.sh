@@ -6,6 +6,8 @@
 #
 # Usage: bash scripts/negation_pipeline.sh
 
+trap 'echo; echo "Interrupted — stopping pipeline."; exit 1' INT TERM
+
 # ── 1. Generate data ──────────────────────────────────────────────────────────
 
 python scripts/generate_ss_pairs.py
