@@ -241,6 +241,8 @@ def parse_args() -> argparse.Namespace:
                         help="Use chat template instead of raw completion prompt")
     parser.add_argument("--load-in-8bit", action="store_true",
                         help="Load model in 8-bit quantization (requires bitsandbytes)")
+    parser.add_argument("--train-depths", default=None,
+                        help="Comma-separated depths used for training; prints per-depth accuracy after SS/CR")
     return parser.parse_args()
 
 
@@ -296,7 +298,50 @@ def main() -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as output_file:
             json.dump(results, output_file, indent=2, ensure_ascii=False)
-        print(f"Saved to {args.output}")
+            print(f"Saved to {args.output}")
+
+    if args.train_depths is not None:
+        print_negation_accuracy(results, args.train_depths)
+
+
+CORRECT_ANSWER_AT_DEPTH = {0: "yes", 1: "no", 2: "yes", 3: "no", 4: "yes", 5: "no", 6: "yes"}
+DEPTH_LABELS = [
+    "depth-0 (P)", "depth-1 (¬P)", "depth-2 (¬²P)", "depth-3 (¬³P)",
+    "depth-4 (¬⁴P)", "depth-5 (¬⁵P)", "depth-6 (¬⁶P)",
+]
+
+
+def print_negation_accuracy(results: list[dict], train_depths_arg: str) -> None:
+    train_depths = [int(depth_str) for depth_str in train_depths_arg.split(",")]
+
+    print()
+    print("=" * 65)
+    print(f"Per-depth accuracy  (train depths: {train_depths})")
+    print("=" * 65)
+    print(f"  {'Depth':<18} {'Expected':<10} {'Status':<8} {'Accuracy':>8}  (correct/total)")
+    print(f"  {'-'*18} {'-'*10} {'-'*8} {'-'*8}")
+
+    for depth in range(7):
+        depth_results = [r for r in results if r["category"] == f"negation_depth_{depth}"]
+        if not depth_results:
+            continue
+
+        expected_answer = CORRECT_ANSWER_AT_DEPTH[depth]
+        status = "TRAIN" if depth in train_depths else "TEST"
+
+        num_correct = 0
+        num_total = 0
+        for result in depth_results:
+            for answer in result["metrics"]["answers"]:
+                num_total += 1
+                if answer.strip().lower() == expected_answer:
+                    num_correct += 1
+
+        accuracy = num_correct / num_total if num_total > 0 else 0.0
+        label = DEPTH_LABELS[depth] if depth < len(DEPTH_LABELS) else f"depth-{depth}"
+        print(f"  {label:<18} {expected_answer:<10} {status:<8} {accuracy:>8.3f}  ({num_correct}/{num_total})")
+
+    print()
 
 
 if __name__ == "__main__":
